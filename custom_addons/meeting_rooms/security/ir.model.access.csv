@@ -1,0 +1,5 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_meeting_rooms,access_meeting_rooms,model_meeting_rooms,base.group_user,1,1,1,1
+access_room_location,access_room_location,model_room_location,base.group_user,1,1,1,1
+access_meeting_event,access_meeting_event,model_meeting_event,base.group_user,1,1,1,1
+access_virtual_room,access_virtual_room,model_virtual_room,base.group_user,1,1,1,1

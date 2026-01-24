@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<odoo>
+    <template id="meeting_rooms_html" name="Meeting Rooms HTML">
+        <t t-name="meeting_rooms.meeting_rooms_html">
+            <html lang="en">
+                <head>
+                    <title>Meeting Rooms Create Calendar</title>
+                    <meta charset="utf-8"/>
+                    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+                    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.6.0/jquery.min.js"/>
+                    <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.4.1/js/bootstrap.min.js"/>
+                    <link type="text/scss" rel="stylesheet" href="/meeting_rooms/static/src/css/index.css"/>
+                    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+                    <script type="text/javascript" src="/meeting_rooms/static/src/js/index.js"/>
+<!--                    <script type="text/javascript" src="/web/static/lib/moment/moment.js"/>-->
+                </head>
+                <body>
+                    <input type="hidden" id="start_date" t-att-value="start_date"/>
+                    <input type="hidden" id="end_date" t-att-value="end_date"/>
+                    <input type="hidden" id="subject" t-att-value="docs.subject"/>
+                    <input type="hidden" id="room_location" t-att-value="docs.room_location.name"/>
+                    <input type="hidden" id="description" t-att-value="docs.description"/>
+                    <input type="hidden" id="reminder" t-att-value="docs.calendar_alarm.duration"/>
+                    <input type="hidden" id="attendee" t-att-value="attendee"/>
+                    <input type="hidden" id="user_email" t-att-value="request.env.user.email"/>
+                    <input type="hidden" id="user_name" t-att-value="request.env.user.display_name"/>
+                    <input type="hidden" id="meeting_id" t-att-value="docs.id"/>
+                    <input type="hidden" id="create_date" t-att-value="docs.create_date"/>
+                    <input type="hidden" id="write_date" t-att-value="docs.write_date"/>
+                    <input type="hidden" id="version" t-att-value="docs.version"/>
+                    <input type="hidden" id="roomTZ" t-att-value="docs.room_location.tz"/>
+                    <input type="hidden" id="tzOffset" t-att-value="docs.room_location.tz_offset"/>
+                </body>
+            </html>
+        </t>
+
+    </template>
+</odoo>

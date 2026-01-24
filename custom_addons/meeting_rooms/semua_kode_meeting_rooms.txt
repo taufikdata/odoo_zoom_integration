@@ -1,0 +1,1001 @@
+
+
+=== FILE: ./__init__.py ===
+from . import models,controllers
+
+=== FILE: ./static/src/html/index.xml ===
+<?xml version="1.0" encoding="UTF-8" ?>
+<odoo>
+    <template id="meeting_rooms_html" name="Meeting Rooms HTML">
+        <t t-name="meeting_rooms.meeting_rooms_html">
+            <html lang="en">
+                <head>
+                    <title>Meeting Rooms Create Calendar</title>
+                    <meta charset="utf-8"/>
+                    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+                    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.6.0/jquery.min.js"/>
+                    <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.4.1/js/bootstrap.min.js"/>
+                    <link type="text/scss" rel="stylesheet" href="/meeting_rooms/static/src/css/index.css"/>
+                    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+                    <script type="text/javascript" src="/meeting_rooms/static/src/js/index.js"/>
+<!--                    <script type="text/javascript" src="/web/static/lib/moment/moment.js"/>-->
+                </head>
+                <body>
+                    <input type="hidden" id="start_date" t-att-value="start_date"/>
+                    <input type="hidden" id="end_date" t-att-value="end_date"/>
+                    <input type="hidden" id="subject" t-att-value="docs.subject"/>
+                    <input type="hidden" id="room_location" t-att-value="docs.room_location.name"/>
+                    <input type="hidden" id="description" t-att-value="docs.description"/>
+                    <input type="hidden" id="reminder" t-att-value="docs.calendar_alarm.duration"/>
+                    <input type="hidden" id="attendee" t-att-value="attendee"/>
+                    <input type="hidden" id="user_email" t-att-value="request.env.user.email"/>
+                    <input type="hidden" id="user_name" t-att-value="request.env.user.display_name"/>
+                    <input type="hidden" id="meeting_id" t-att-value="docs.id"/>
+                    <input type="hidden" id="create_date" t-att-value="docs.create_date"/>
+                    <input type="hidden" id="write_date" t-att-value="docs.write_date"/>
+                    <input type="hidden" id="version" t-att-value="docs.version"/>
+                    <input type="hidden" id="roomTZ" t-att-value="docs.room_location.tz"/>
+                    <input type="hidden" id="tzOffset" t-att-value="docs.room_location.tz_offset"/>
+                </body>
+            </html>
+        </t>
+
+    </template>
+</odoo>
+
+=== FILE: ./__manifest__.py ===
+{
+    'name': "Meeting Rooms",
+
+    'summary': """
+        Short (1 phrase/line) summary of the module's purpose, used as
+        subtitle on modules listing or apps.openerp.com""",
+
+    'tag': """
+        Long tag of module's purpose
+    """,
+
+    'author': "Alam",
+    'website': "https://www.alamkamajana.com",
+
+    # Categories can be used to filter modules in modules listing
+    # Check https://github.com/odoo/odoo/blob/13.0/odoo/addons/base/data/ir_module_category_data.xml
+    # for the full list
+    'category': 'Uncategorized',
+    'version': '0.1',
+
+    # any module necessary for this one to work correctly
+    'depends': ['base', 'calendar', 'mail', 'contacts'],
+
+    # always loaded
+    'data': [
+        'security/ir.model.access.csv',
+        'views/view.xml',
+        'static/src/html/index.xml',
+    ],
+
+}
+
+
+=== FILE: ./views/view.xml ===
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <record id="mail_act_meeting_rooms_approval" model="mail.activity.type">
+        <field name="name">Meeting Rooms</field>
+        <field name="icon">fa-sun-o</field>
+        <field name="res_model_id" ref="meeting_rooms.model_meeting_rooms"/>
+    </record>
+
+    <record id="meeting_rooms_calendar_view" model="ir.ui.view">
+        <field name="name">meeting_rooms_calendar_view</field>
+        <field name="model">meeting.rooms</field>
+        <field name="arch" type="xml">
+            <calendar string="Meeting Date" date_start="start_date" date_stop="end_date" mode="day" quick_add="False"
+                      color="room_location">
+                <field name="room_location"/>
+                <field name="subject"/>
+                <field name="start_date"/>
+                <field name="end_date"/>
+                <field name="attendee"/>
+                <field name="state"/>
+            </calendar>
+        </field>
+    </record>
+
+    <record id="meeting_rooms_tree_view" model="ir.ui.view">
+        <field name="name">meeting_rooms_tree_view</field>
+        <field name="model">meeting.rooms</field>
+        <field name="arch" type="xml">
+            <tree string="Meeting Room Booking">
+                <field name="subject"/>
+                <field name="room_location"/>
+                <field name="start_date"/>
+                <field name="end_date"/>
+                <field name="attendee" widget="many2many_tags"/>
+                <field name="description"/>
+                <field name="state"/>
+                <button name="unlink" string="Delete" class="btn-danger fa-trash-o" type="object"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="meeting_rooms_from_view" model="ir.ui.view">
+        <field name="name">meeting_rooms_from_view</field>
+        <field name="model">meeting.rooms</field>
+        <field name="arch" type="xml">
+            <form string="Meeting Rooms Booking">
+                <header>
+                    <button name="action_confirm" type="object" states="draft" string="Confirm" class="oe_highlight"/>
+                    <button name="action_cancel" type="object" states="confirm" string="Cancel"/>
+                    <button name="action_draft" type="object" states="cancel" string="Set To Draft"/>
+                    <button name="send_email_meeting" type="object" string="Send Email Meeting"/>
+                    <field name="state" widget="statusbar" statusbar_visible="draft,confirm,cancel"/>
+                </header>
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="subject" required="1"/>
+                            <field name="room_location" widget="selection"/>
+                            <field name="description"/>
+                            <field name="calendar_alarm" domain="[('interval','=','minutes'),('alarm_type','=','notification')]" widget="selection"/>
+                            <field name="recurrency"/>
+                        </group>
+                        <group>
+                            <field name="start_date"/>
+                            <field name="end_date"/>
+                            <field name="attendee" required="1" options="{'no_create_edit': True,'no_create': True}"
+                                   widget="many2many_tags" domain="[('login','ilike','@Tripper.com'),('id','!=',uid)]"/>
+                            <button name="create_calendar_web" type="object" string="Send Email"/>
+                        </group>
+
+                    </group>
+                    <group>
+                        <field name="create_uid" string="Insiator"/>
+                        <field name="create_date" string="Create Date"/>
+                    </group>
+                    <notebook>
+                        <page attrs="{'invisible': [('recurrency', '=', False)]}" string="Reccurent">
+                            <group>
+                                <field name="rrule_type" attrs="{'required': [('recurrency', '=', True)]}"/>
+                            </group>
+                            <group>
+                                <field name="final_date" attrs="{'required': [('recurrency', '=', True)]}"/>
+                            </group>
+                        </page>
+                        <page string="IT Settings" groups="base.group_system">
+                            <group>
+                                <field name="version"/>
+                                <field name="calendar_file"/>
+                            </group>
+                        </page>
+                    </notebook>
+                </sheet>
+
+                <div class="oe_chatter">
+                    <field name="message_follower_ids" widget="mail_followers" groups="base.group_user"/>
+                    <field name="message_ids" widget="mail_thread"/>
+                    <field name="activity_ids" widget="mail_activity"/>
+                </div>
+
+            </form>
+        </field>
+    </record>
+
+    <record id="room_location_form_view" model="ir.ui.view">
+        <field name="name">room.location.form.view</field>
+        <field name="model">room.location</field>
+        <field name="arch" type="xml">
+            <form string="Room Booking">
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="name"/>
+                            <field name="location_address"/>
+                            <field name="location_description"/>
+                            <field name="active"/>
+                            <field name="tz"/>
+                        </group>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="room_location_tree_view" model="ir.ui.view">
+        <field name="name">room_location.tree.view</field>
+        <field name="model">room.location</field>
+        <field name="arch" type="xml">
+            <tree string="Room Locations">
+                <field name="name"/>
+                <field name="location_address"/>
+                <field name="location_description"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="meeting_event_form_view" model="ir.ui.view">
+        <field name="name">meeting.event.form</field>
+        <field name="model">meeting.event</field>
+        <field name="arch" type="xml">
+            <form string="Meeting Event">
+                <header>
+                    <button name="action_confirm" type="object" states="draft" string="Confirm" class="oe_highlight"/>
+                    <button name="action_cancel" type="object" states="confirm" string="Cancel"/>
+                    <button name="action_draft" type="object" states="cancel" string="Set To Draft"/>
+                    <field name="state" widget="statusbar" statusbar_visible="draft,confirm,cancel"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <label for="subject" class="oe_edit_only"/>
+                        <h1><field name="subject" placeholder="e.g. Annual General Meeting"/></h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="room_location_ids" widget="many2many_tags" options="{'no_create': True}"/>
+                            <field name="calendar_alarm" widget="selection"/>
+                            <field name="recurrency"/>
+                        </group>
+                        <group>
+                            <field name="start_date"/>
+                            <field name="end_date"/>
+                            <field name="attendee" widget="many2many_tags"/>
+                        </group>
+                    </group>
+                    <field name="description" placeholder="Event Description..."/>
+                </sheet>
+                <div class="oe_chatter">
+                    <field name="message_follower_ids" widget="mail_followers"/>
+                    <field name="message_ids" widget="mail_thread"/>
+                </div>
+            </form>
+        </field>
+    </record>
+
+    <record id="meeting_event_tree_view" model="ir.ui.view">
+        <field name="name">meeting.event.tree</field>
+        <field name="model">meeting.event</field>
+        <field name="arch" type="xml">
+            <tree string="Meeting Events">
+                <field name="subject"/>
+                <field name="room_location_ids" widget="many2many_tags"/>
+                <field name="start_date"/>
+                <field name="end_date"/>
+                <field name="state"/>
+            </tree>
+        </field>
+    </record>
+
+    <record model="ir.actions.act_window" id="action_meeting_rooms">
+        <field name="name">Meeting Rooms</field>
+        <field name="type">ir.actions.act_window</field>
+        <field name="res_model">meeting.rooms</field>
+        <field name="view_mode">calendar,tree,form</field>
+    </record>
+
+    <record model="ir.actions.act_window" id="action_room_location">
+        <field name="name">Room Locations</field>
+        <field name="type">ir.actions.act_window</field>
+        <field name="res_model">room.location</field>
+        <field name="view_mode">tree,form</field>
+    </record>
+
+    <record id="action_meeting_event" model="ir.actions.act_window">
+        <field name="name">Meeting Events</field>
+        <field name="res_model">meeting.event</field>
+        <field name="view_mode">tree,form</field>
+    </record>
+
+    <menuitem name="Meeting Rooms" id="menu_meeting_rooms" parent="" action="action_meeting_rooms" sequence="60"/>
+    
+    <menuitem name="Meeting Events" id="menu_meeting_event" parent="menu_meeting_rooms" action="action_meeting_event" sequence="60"/>
+
+    <menuitem name="Room Locations" id="menu_room_locations" parent="menu_meeting_rooms" action="action_room_location"
+              groups="approvals.group_approval_user" sequence="61"/>
+
+</odoo>
+
+=== FILE: ./controllers/website.py ===
+# -*- coding: utf-8 -*-
+from datetime import datetime,date,timedelta
+import json
+from werkzeug.utils import redirect
+from odoo import http
+from odoo.http import request
+import pytz
+import base64
+
+
+class MeetingRoomsWebsite(http.Controller):
+    @http.route('/create-icalendar', auth='user', website=True)
+    def create_icalendar(self, **kw):
+        meeting_id = kw.get('id')
+        meeting = request.env['meeting.rooms'].sudo().browse(int(meeting_id))
+        attendee = []
+        tz = pytz.timezone(meeting.room_location.tz or "Asia/Singapore")
+        current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
+        offset_hours = current_offset.total_seconds() / 3600
+        start_time = meeting.start_date + timedelta(hours=offset_hours)
+        end_time = meeting.end_date + timedelta(hours=offset_hours)
+        create_time = meeting.create_date + timedelta(hours=offset_hours)
+        write_time = meeting.write_date + timedelta(hours=offset_hours)
+        for user in meeting.attendee :
+            if user.display_name and user.email :
+                attendee.append({
+                    "name" : user.display_name,"email" : user.email
+                })
+        vals = {
+            'docs' : meeting,
+            'attendee' : attendee,
+            'start_date' : start_time,
+            'end_date' : end_time,
+            'create_date' : create_time,
+            'write_date' : write_time
+
+        }
+        return request.render("meeting_rooms.meeting_rooms_html", vals)
+
+    @http.route('/add-icalendar-file', type='http', auth='user', website=True, csrf=False)
+    def add_calendar_file(self, **kw):
+        file = kw.get("calendar")
+        file_name = kw.get("calendar_name")
+        meeting_id = int(kw.get("meeting_id"))
+        files = base64.b64encode(file.read())
+        attachment = None
+        attachment_calendar = request.env['ir.attachment'].sudo().search(
+            [('res_model', '=', 'meeting.rooms'), ('type', '=', 'binary'), ('res_field', '=', 'calendar_file'),
+             ('res_id', '=', meeting_id)])
+        if attachment_calendar:
+            attachment_calendar.unlink()
+            attachment = request.env['ir.attachment'].sudo().create({
+                'name': file_name,
+                'type': 'binary',
+                'res_model': 'meeting.rooms',
+                'res_field': 'calendar_file',
+                'res_id': meeting_id,
+                'res_name': file_name,
+                'datas': files,
+                'public': True
+            })
+        else:
+            attachment = request.env['ir.attachment'].sudo().create({
+                'name': file_name,
+                'type': 'binary',
+                'res_model': 'meeting.rooms',
+                'res_field': 'calendar_file',
+                'res_id': meeting_id,
+                'res_name': file_name,
+                'datas': files,
+                'public': True
+            })
+        record = request.env['meeting.rooms'].sudo().browse(meeting_id)
+        tz = pytz.timezone(record.room_location.tz or "Asia/Singapore")
+        current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
+        offset_hours = current_offset.total_seconds() / 3600
+        start_time = record.start_date + timedelta(hours=offset_hours)
+        end_time = record.end_date + timedelta(hours=offset_hours)
+        formatted_start_time = start_time.strftime('%b %d, %Y')
+        start_time_hours = start_time.strftime('%H:%M')
+        formatted_end_time = end_time.strftime('%b %d, %Y %H:%M')
+        end_time_hours = end_time.strftime('%H:%M')
+        duration = end_time - start_time
+        meeting_hours, remainder = divmod(duration.total_seconds(), 3600)
+        meeting_minutes, meeting_seconds = divmod(remainder, 60)
+        meeting_hours_str = ""
+        if meeting_hours > 0:
+            meeting_hours_str = f"{int(meeting_hours)} hours "
+
+        meeting_minutes_str = ""
+        if meeting_minutes > 0:
+            meeting_minutes_str = f"{int(meeting_minutes)} minutes"
+        recipients = []
+        recipients.append(record.create_uid.email)
+        for user in record.attendee:
+            recipients.append(user.email)
+        recipients_email = ",".join(recipients)
+        email_body = f"""
+            Hi <b>Team</b>,<br/><br/>
+            I hope this message finds you well. <b>{record.create_uid.name}</b> has invited you to the "{record.name}" meeting<br/><br/>
+            <table border="0">
+                <tbody>
+                    <tr>
+                        <td style="width:80px;">Date</td>
+                        <td>: {formatted_start_time}</td>
+                    </tr>
+                    <tr>
+                        <td>Time</td>
+                        <td>: {start_time_hours} - {end_time_hours} ({record.room_location.tz}'s Time)</td>
+                    </tr>
+                    <tr>
+                        <td>Duration</td>
+                        <td>: {meeting_hours_str}{meeting_minutes_str}</td>
+                    </tr>
+                    <tr>
+                        <td>Location</td>
+                        <td>: {record.room_location.name}</td>
+                    </tr>
+                </tbody>
+            </table>
+            <br/>
+            To accept or decline this invitation, click the attachment below.<br/><br/>
+            """
+        email = request.env['mail.mail'].sudo().create({
+            'subject': record.subject,
+            'email_from': 'odoo-erp@tripper.com',
+            'email_to': recipients_email,
+            'body_html': email_body
+
+        })
+        email.attachment_ids = attachment
+        email.send()
+        log = None
+        if email.state == "sent":
+            log = f"""
+                    <b>Email Sent</b> <br/>
+                    id : {email.id} <br/>
+                    subject : {email.subject} <br/>
+                    email to : {recipients_email} <br/>
+                    body : {email.body_html} 
+
+                """
+        elif email.state == "exception":
+            log = f"Email {email.id} Delivery Failed"
+        else:
+            log = f"Email Delivery {email.state}"
+        record.message_post(body=log)
+        data = {'url': attachment.local_url}
+        return json.dumps(data)
+
+
+=== FILE: ./controllers/__init__.py ===
+from . import website
+
+=== FILE: ./security/ir.model.access.csv ===
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_meeting_rooms,access.meeting_rooms,model_meeting_rooms,base.group_user,1,1,1,1
+access_room_location,access.room_location,model_room_location,base.group_user,1,1,1,1
+access_meeting_event,meeting.event,model_meeting_event,base.group_user,1,1,1,1
+
+=== FILE: ./models/__init__.py ===
+from . import model
+
+=== FILE: ./models/model.py ===
+from odoo import fields, models, api, _
+from datetime import datetime, timedelta,date
+from odoo.exceptions import AccessDenied
+import pytz
+import subprocess
+import base64
+
+# put POSIX 'Etc/*' entries at the end to avoid confusing users - see bug 1086728
+_tzs = [(tz, tz) for tz in sorted(pytz.all_timezones, key=lambda tz: tz if not tz.startswith('Etc/') else '_')]
+def _tz_get(self):
+    return _tzs
+
+class MeetingRoomsLocation(models.Model):
+    _name = 'room.location'
+    name = fields.Char("Location")
+    active = fields.Boolean("active ?", default=True)
+    location_address = fields.Text("Address")
+    location_description = fields.Text("Description")
+    tz = fields.Selection(_tz_get, string='Timezone', default=lambda self: self._context.get('tz'),
+                          help="When printing documents and exporting/importing data, time values are computed according to this timezone.\n"
+                               "If the timezone is not set, UTC (Coordinated Universal Time) is used.\n"
+                               "Anywhere else, time values are computed according to the time offset of your web client.")
+    tz_offset = fields.Char("Offset", compute = '_compute_offset')
+
+    def _compute_offset(self):
+        for record in self:
+            timezone = record.tz or 'UTC'  # Default to UTC if no timezone is set
+
+            time_zone = pytz.timezone(timezone)
+            current_time = datetime.now(pytz.utc).astimezone(time_zone)
+
+            timezone_offset = current_time.utcoffset().total_seconds() / 60
+
+            offset_hours = int(timezone_offset // 60)
+            offset_minutes = int(abs(timezone_offset) % 60)
+
+            # Format the offset (e.g., +08:00, -05:30, etc.)
+            record.tz_offset = f"{'+' if offset_hours >= 0 else '-'}{abs(offset_hours):02d}{abs(offset_minutes):02d}"
+
+
+class MeetingRooms(models.Model):
+    _inherit = ['mail.thread', 'mail.activity.mixin']
+    _name = 'meeting.rooms'
+    name = fields.Char("Name")
+    subject = fields.Char("Subject")
+    room_location = fields.Many2one("room.location", string="Location", required=True)
+    start_date = fields.Datetime("Start", required=True)
+    end_date = fields.Datetime("End", required=True)
+    attendee = fields.Many2many("res.users", string="Attendee")
+    description = fields.Text("Description")
+    calendar_alarm = fields.Many2one("calendar.alarm", string="Reminder", required=True)
+    state = fields.Selection([('draft', 'Draft'),
+                              ('confirm', 'Confirm'),('cancel','Cancelled')], string='Status',tracking=True, copy=False,default='confirm')
+    recurrency = fields.Boolean('Recurrent', help="Recurrent Meeting")
+    rrule_type = fields.Selection([
+        ('daily', 'Daily'),
+        ('weekly', 'Weekly')
+    ], string='Recurrence', help="Let the event automatically repeat at that interval")
+    final_date = fields.Date('Repeat Until')
+    action = fields.Boolean("Action")
+    email_sent = fields.Boolean("Email Sent?")
+    version = fields.Integer("Version", default=1)
+    calendar_file = fields.Binary(string="Calendar File")
+
+    def send_email_meeting(self):
+        for rec in self :
+            tz = pytz.timezone(rec.room_location.tz or "Asia/Singapore")
+            current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
+            offset_hours = current_offset.total_seconds() / 3600
+            start_time = rec.start_date + timedelta(hours=offset_hours)
+            end_time = rec.end_date + timedelta(hours=offset_hours)
+            create_time = rec.create_date + timedelta(hours=offset_hours)
+            write_time = rec.write_date + timedelta(hours=offset_hours)
+            reminder = int(rec.calendar_alarm.duration) if rec.calendar_alarm.duration else 1
+            attendee_str = ''
+            for user in rec.attendee :
+                attendee_str += f'ATTENDEE;ROLE=REQ-PARTICIPANT;RSVP=TRUE;CN="{user.display_name}":mailto:{user.email}'
+                if user != rec.attendee[-1]:
+                    attendee_str += '\n'
+            icsContent = f"""BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//ZContent.net//Zap Calendar 1.0//EN
+CALSCALE:GREGORIAN
+METHOD:REQUEST
+
+BEGIN:VTIMEZONE
+TZID:{rec.room_location.tz}
+X-LIC-LOCATION:${rec.room_location.tz}
+BEGIN:STANDARD
+DTSTART:19700101T000000
+TZOFFSETFROM:{rec.room_location.tz_offset}
+TZOFFSETTO:{rec.room_location.tz_offset}
+TZNAME:${rec.room_location.tz}
+END:STANDARD
+END:VTIMEZONE
+
+BEGIN:VEVENT
+UID:{rec.id}
+SEQUENCE:{rec.version}
+SUMMARY:{rec.subject}
+DTSTAMP:{create_time}
+LAST-MODIFIED:{write_time}
+DTSTART;TZID={rec.room_location.tz}:{start_time}
+DTEND;TZID={rec.room_location.tz}:{end_time}
+LOCATION:{rec.room_location.name}
+DESCRIPTION:{rec.description}
+ORGANIZER;PARTSTAT=ACCEPTED;CN="{rec.create_uid.display_name}":mailto:{rec.create_uid.email}
+{attendee_str}
+BEGIN:VALARM
+TRIGGER:-PT${reminder}M
+ACTION:DISPLAY
+DESCRIPTION:Reminder
+END:VALARM
+END:VEVENT
+END:VCALENDAR`;
+            """
+            filename = f"{rec.subject}.ics"
+            with open(filename, 'w') as file:
+                file.write(icsContent)
+
+            with open(filename, 'rb') as file:
+                attachment_calendar = self.env['ir.attachment'].sudo().search(
+                    [('res_model', '=', 'meeting.rooms'), ('type', '=', 'binary'), ('res_field', '=', 'calendar_file'),('res_id', '=', rec.id)])
+                if attachment_calendar:
+                    attachment_calendar.unlink()
+                    attachment = self.env['ir.attachment'].sudo().create({
+                        'name': filename,
+                        'type': 'binary',
+                        'res_model': 'meeting.rooms',
+                        'res_field': 'calendar_file',
+                        'res_id': rec.id,
+                        'res_name': filename,
+                        'datas': base64.b64encode(file.read()),
+                        'public': True
+                    })
+                else:
+                    attachment = self.env['ir.attachment'].sudo().create({
+                        'name': filename,
+                        'type': 'binary',
+                        'res_model': 'meeting.rooms',
+                        'res_field': 'calendar_file',
+                        'res_id': rec.id,
+                        'res_name': filename,
+                        'datas': base64.b64encode(file.read()),
+                        'public': True
+                    })
+
+
+
+    def create_calendar_event(self):
+        for rec in self :
+            tz = pytz.timezone(rec.room_location.tz or "Asia/Singapore")
+            current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
+            offset_hours = current_offset.total_seconds() / 3600
+            start_time = rec.start_date + timedelta(hours=offset_hours)
+            end_time = rec.end_date + timedelta(hours=offset_hours)
+            start_day = start_time.day
+            start_month = start_time.month
+            start_year = start_time.year
+            start_hour = start_time.hour
+            start_minute = start_time.minute
+            start_second = start_time.second
+            end_day = end_time.day
+            end_month = end_time.month
+            end_year = end_time.year
+            end_hour = end_time.hour
+            end_minute = end_time.minute
+            end_second = end_time.second
+            subject = rec.subject
+            reminder = int(rec.calendar_alarm.duration) if rec.calendar_alarm.duration else 1
+            description = rec.description if rec.description else None
+
+            attendee = ''
+            for user in self.attendee :
+                if user.display_name and user.email :
+                    attendee += 'make new attendee at beginning of attendees with properties {display name:"%s", email:"%s"}\n' %(user.display_name,user.email)
+
+            applescript = """
+        set theStartDate to (current date) 
+        set year of theStartDate to %s
+        set month of theStartDate to %s
+        set day of theStartDate to %s
+        set hours of theStartDate to %s
+        set minutes of theStartDate to %s
+        set seconds of theStartDate to %s
+        set theEndDate to (current date) 
+        set year of theEndDate to %s
+        set month of theEndDate to %s
+        set day of theEndDate to %s
+        set hours of theEndDate to %s
+        set minutes of theEndDate to %s
+        set seconds of theEndDate to %s
+    
+        tell application "Calendar"
+        activate
+            tell calendar "Home"
+                set new_event to make new event at end of events with properties {summary:"%s", start date:theStartDate, end date:theEndDate, location:"%s", description:"%s"}
+            end tell
+            tell new_event
+                %s
+            end tell
+            tell new_event
+                make new sound alarm at end of sound alarms with properties {trigger interval:-%s, sound name:"Sosumi"}
+            end tell
+        end tell
+            """ % (start_year, start_month, start_day, start_hour, start_minute, start_second, end_year, end_month, end_day,
+                   end_hour, end_minute, end_second, subject,rec.room_location.name,description,attendee,reminder)
+
+            subprocess.run(['osascript', '-e', applescript])
+
+
+    def run_calendar(self):
+        for rec in self :
+            self.create_calendar_event()
+
+    def create_calendar_web(self):
+        return {
+            'name': "Create Calendar",
+            'type': 'ir.actions.act_url',
+            'url': f"/create-icalendar?id={self.id}",
+            'target': 'new',
+        }
+
+    def action_confirm(self):
+        tz = pytz.timezone(self.room_location.tz or "Asia/Singapore")
+        current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
+        offset_hours = current_offset.total_seconds() / 3600
+        for rec in self:
+            start_time = rec.start_date + timedelta(hours=offset_hours)
+            end_time = rec.end_date + timedelta(hours=offset_hours)
+            for user in rec.attendee :
+                rec.activity_schedule(
+                    'meeting_rooms.mail_act_meeting_rooms_approval',
+                    note=f"You are invited to attend Meeting {rec.subject} from {start_time} to {end_time} in {rec.room_location.name}",
+                    user_id=user.id)
+            rec.state = 'confirm'
+
+    def action_cancel(self):
+        tz = pytz.timezone(self.room_location.tz or "Asia/Singapore")
+        current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
+        offset_hours = current_offset.total_seconds() / 3600
+        for rec in self :
+            start_time = rec.start_date + timedelta(hours=offset_hours)
+            end_time = rec.end_date + timedelta(hours=offset_hours)
+            rec.activity_feedback(['meeting_rooms.mail_act_meeting_rooms_approval'])
+            group = []
+            for user in rec.attendee :
+                group.append(user.partner_id.id)
+            value = {'partner_ids': group,
+                     'channel_ids': [],
+                     'body': f"Meeting {rec.subject} from {start_time} to {end_time} in {rec.room_location.name} Is Cancelled",
+                     'attachment_ids': [],
+                     'canned_response_ids': [],
+                     'message_type': 'comment',
+                     'subtype': 'mail.mt_note'}
+            rec.message_post(**value)
+            rec.state = 'cancel'
+
+    def action_draft(self):
+        self.state = 'draft'
+
+
+    def unlink(self):
+        if self.create_uid != self.env.user and self.env.user.id not in [2,892,469]:
+            raise AccessDenied(f"Only Insiator ({self.create_uid.name}) Or IT Admin, Can Delete")
+        return super(MeetingRooms, self).unlink()
+
+    @api.constrains('start_date', 'end_date', 'room_location')
+    def _check_booking_validity(self):
+        tz = pytz.timezone(self.room_location.tz or "Asia/Singapore")
+        current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
+        offset_hours = current_offset.total_seconds() / 3600
+        for record in self:
+            if record.end_date <= record.start_date:
+                raise AccessDenied(_("End Date cannot be in the past"))
+            records = self.search([])
+            for rec in records :
+                start_time = rec.start_date + timedelta(hours=offset_hours)
+                end_time = rec.end_date + timedelta(hours=offset_hours)
+                if self.start_date > rec.start_date and self.end_date < rec.end_date and self.room_location == rec.room_location :
+                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time},  in {rec.room_location.name} Please Choose Another Schedule")
+                elif self.start_date > rec.start_date and self.start_date < rec.end_date and self.room_location == rec.room_location:
+                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time},in {rec.room_location.name} Please Choose Another Schedule")
+                elif self.end_date > rec.start_date and self.end_date < rec.end_date and self.room_location == rec.room_location :
+                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time},in {rec.room_location.name} Please Choose Another Schedule")
+                elif self.start_date < rec.start_date and self.end_date > rec.end_date and self.room_location == rec.room_location :
+                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time},in {rec.room_location.name} Please Choose Another Schedule")
+                # elif self.start_date < rec.start_date and self.end_date == rec.end_date and self.room_location == rec.room_location :
+                #     raise AccessDenied(f"Meeting Room Already Used from {rec.start_date} to {rec.end_date}, Please Choose Another Schedule")
+                elif self.start_date == rec.start_date and self.end_date > rec.end_date and self.room_location == rec.room_location :
+                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time},in {rec.room_location.name} Please Choose Another Schedule")
+                elif self.start_date == rec.start_date and self.end_date == rec.end_date and self.room_location == rec.room_location and self.id != rec.id :
+                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time},in {rec.room_location.name} Please Choose Another Schedule")
+
+    @api.model
+    def create(self, vals):
+        vals['name'] = vals['subject']
+        values = super(MeetingRooms, self).create(vals)
+        tz = pytz.timezone(values.room_location.tz or "Asia/Singapore")
+        current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
+        offset_hours = current_offset.total_seconds() / 3600
+        start_time = values.start_date + timedelta(hours=offset_hours)
+        end_time = values.end_date + timedelta(hours=offset_hours)
+        formatted_start_time = start_time.strftime('%b %d, %Y')
+        start_time_hours = start_time.strftime('%H:%M')
+        formatted_end_time = end_time.strftime('%b %d, %Y %H:%M')
+        end_time_hours = end_time.strftime('%H:%M')
+        duration = end_time - start_time
+        meeting_hours, remainder = divmod(duration.total_seconds(), 3600)
+        meeting_minutes, meeting_seconds = divmod(remainder, 60)
+        meeting_hours_str = ""
+        if meeting_hours > 0:
+            meeting_hours_str = f"{int(meeting_hours)} hours "
+
+        meeting_minutes_str = ""
+        if meeting_minutes > 0:
+            meeting_minutes_str = f"{int(meeting_minutes)} minutes"
+
+        for user in values.attendee:
+            values.activity_schedule(
+                'meeting_rooms.mail_act_meeting_rooms_approval',
+                note=f"""
+                        Hi <b>{user.name}</b>,<br/><br/>
+                        I hope this message finds you well. <b>{values.create_uid.name}</b> has invited you to the "{values.name}" meeting<br/><br/>
+                        <table border="0">
+                            <tbody>
+                                <tr>
+                                    <td style="width:80px;">Date</td>
+                                    <td>: {formatted_start_time}</td>
+                                </tr>
+                                <tr>
+                                    <td>Time</td>
+                                    <td>: {start_time_hours} - {end_time_hours} ({values.room_location.tz}'s Time)</td>
+                                </tr>
+                                <tr>
+                                    <td>Duration</td>
+                                    <td>: {meeting_hours_str}{meeting_minutes_str}</td>
+                                </tr>
+                                <tr>
+                                    <td>Location</td>
+                                    <td>: {values.room_location.name}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <br/>
+                        """,
+                user_id=user.id,
+                date_deadline=start_time)
+        if values.recurrency :
+            if values.rrule_type == "daily" :
+                delta = timedelta(days=1)
+                start_date = values.start_date
+                end_date = values.end_date
+                date_count = values.start_date.date()
+                while date_count <= values.final_date :
+                    start_date += delta
+                    end_date += delta
+                    date_count += delta
+                    value = {
+                        'subject' : values.subject,
+                        'name' : values.name,
+                        'start_date' : start_date,
+                        'end_date' : end_date,
+                        'description' : values.description,
+                        'calendar_alarm' : values.calendar_alarm.id,
+                        'attendee' : values.attendee,
+                        'room_location' : values.room_location.id
+                    }
+                    meeting = self.env['meeting.rooms'].sudo().create(value)
+                    # meeting.create_calendar_event()
+
+            elif values.rrule_type == "weekly":
+                delta = timedelta(days=7)
+                start_date = values.start_date
+                end_date = values.end_date
+                date_count = values.start_date.date()
+                while date_count <= values.final_date:
+                    start_date += delta
+                    end_date += delta
+                    date_count += delta
+                    value = {
+                        'subject': values.subject,
+                        'name': values.name,
+                        'start_date': start_date,
+                        'end_date': end_date,
+                        'description': values.description,
+                        'calendar_alarm': values.calendar_alarm.id,
+                        'attendee': values.attendee,
+                        'room_location': values.room_location.id
+                    }
+                    meeting = self.env['meeting.rooms'].sudo().create(value)
+                    # meeting.create_calendar_event()
+        return values
+
+    def write(self,vals):
+        if self.create_uid != self.env.user and self.env.user.id not in [2,892,469] :
+            raise AccessDenied(f"Only Insiator ({self.create_uid.name}) Or IT Admin, Can Edit")
+        else :
+            return super(MeetingRooms, self).write(vals)
+        
+
+class MeetingEvent(models.Model):
+    _inherit = ['mail.thread', 'mail.activity.mixin']
+    _name = 'meeting.event'  # Nama tabel baru
+    _description = 'Meeting Event (Multi Location)'
+
+    name = fields.Char("Name")
+    subject = fields.Char("Subject")
+    
+    # PERUBAHAN UTAMA: Pakai Many2many biar bisa pilih banyak lokasi
+    room_location_ids = fields.Many2many("room.location", string="Locations", required=True)
+    
+    start_date = fields.Datetime("Start", required=True)
+    end_date = fields.Datetime("End", required=True)
+    attendee = fields.Many2many("res.users", string="Attendee")
+    description = fields.Text("Description")
+    calendar_alarm = fields.Many2one("calendar.alarm", string="Reminder", required=True)
+    
+    # State kita samakan logicnya
+    state = fields.Selection([
+        ('draft', 'Draft'),
+        ('confirm', 'Confirm'),
+        ('cancel', 'Cancelled')
+    ], string='Status', tracking=True, copy=False, default='draft') # Default draft dulu biar aman
+
+    recurrency = fields.Boolean('Recurrent', help="Recurrent Meeting")
+    rrule_type = fields.Selection([
+        ('daily', 'Daily'),
+        ('weekly', 'Weekly')
+    ], string='Recurrence', help="Let the event automatically repeat at that interval")
+    final_date = fields.Date('Repeat Until')
+    action = fields.Boolean("Action")
+    email_sent = fields.Boolean("Email Sent?")
+    version = fields.Integer("Version", default=1)
+    calendar_file = fields.Binary(string="Calendar File")
+
+    # --- LOGIKA VALIDASI GANDA ---
+    @api.constrains('start_date', 'end_date', 'room_location_ids')
+    def _check_booking_validity(self):
+        # Ambil Timezone dari lokasi PERTAMA yang dipilih (sebagai acuan)
+        first_loc = self.room_location_ids[0] if self.room_location_ids else False
+        tz_name = first_loc.tz if first_loc else "Asia/Singapore"
+        
+        tz = pytz.timezone(tz_name)
+        current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
+        offset_hours = current_offset.total_seconds() / 3600
+
+        for record in self:
+            if record.end_date <= record.start_date:
+                raise AccessDenied(_("End Date cannot be in the past"))
+            
+            # Kita cek setiap ruangan yang dipilih
+            for location in record.room_location_ids:
+                # Cari Event LAIN yang memakai lokasi yang SAMA
+                # Kita cari yang statusnya BUKAN cancel dan ID-nya BUKAN record ini
+                domain = [
+                    ('id', '!=', record.id),
+                    ('state', '!=', 'cancel'),
+                    ('room_location_ids', 'in', location.id) # Cek apakah lokasi ini dipake di event lain
+                ]
+                existing_events = self.search(domain)
+
+                for rec in existing_events:
+                    # Cek Bentrok Waktu (Overlap Logic)
+                    if (record.start_date < rec.end_date) and (record.end_date > rec.start_date):
+                        # Format waktu buat pesan error
+                        start_str = (rec.start_date + timedelta(hours=offset_hours)).strftime('%Y-%m-%d %H:%M')
+                        end_str = (rec.end_date + timedelta(hours=offset_hours)).strftime('%H:%M')
+                        
+                        raise AccessDenied(
+                            f"Room '{location.name}' is already used by '{rec.subject}' "
+                            f"from {start_str} to {end_str}. Please remove this room or change schedule."
+                        )
+
+    # --- OVERRIDE CREATE (Untuk Nama Otomatis & Email) ---
+    @api.model
+    def create(self, vals):
+        vals['name'] = vals.get('subject', 'New Event')
+        event = super(MeetingEvent, self).create(vals)
+        
+        # Kirim Notifikasi (Logic disederhanakan untuk Multi-Location)
+        # Gabungkan nama lokasi jadi string: "Ruang A, Ruang B"
+        loc_names = ", ".join(event.room_location_ids.mapped('name'))
+        
+        # Ambil Timezone lokasi pertama
+        first_loc = event.room_location_ids[0] if event.room_location_ids else False
+        tz_str = first_loc.tz if first_loc else "UTC"
+        
+        tz = pytz.timezone(tz_str)
+        current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
+        offset_hours = current_offset.total_seconds() / 3600
+        
+        start_time = event.start_date + timedelta(hours=offset_hours)
+        end_time = event.end_date + timedelta(hours=offset_hours)
+        
+        start_fmt = start_time.strftime('%b %d, %Y %H:%M')
+        end_fmt = end_time.strftime('%H:%M')
+
+        for user in event.attendee:
+            event.activity_schedule(
+                'meeting_rooms.mail_act_meeting_rooms_approval', # Pastikan ID XML ini ada
+                note=f"""
+                        Hi <b>{user.name}</b>,<br/>
+                        You are invited to Event: <b>{event.name}</b><br/>
+                        <b>Time:</b> {start_fmt} - {end_fmt} ({tz_str})<br/>
+                        <b>Locations:</b> {loc_names}<br/>
+                        """,
+                user_id=user.id,
+                date_deadline=event.start_date.date()
+            )
+        
+        return event
+
+    # --- TOMBOL WORKFLOW ---
+    def action_confirm(self):
+        for rec in self:
+            rec.state = 'confirm'
+
+    def action_cancel(self):
+        for rec in self:
+            rec.state = 'cancel'
+
+    def action_draft(self):
+        for rec in self:
+            rec.state = 'draft'
+
+    # --- PROTEKSI DELETE & EDIT (Sama seperti klien) ---
+    def unlink(self):
+        # Hati-hati: ID [2,892,469] mungkin tidak ada di database baru Bapak.
+        # Tapi saya biarkan sesuai request "copy logic klien".
+        if self.create_uid != self.env.user and self.env.user.id not in [2, 892, 469]:
+            raise AccessDenied(f"Only Initiator ({self.create_uid.name}) Or IT Admin Can Delete")
+        return super(MeetingEvent, self).unlink()
+
+    def write(self, vals):
+        if self.create_uid != self.env.user and self.env.user.id not in [2, 892, 469]:
+             # Kecuali kalau cuma ubah state (approve), biasanya boleh manager. 
+             # Tapi ikut logic klien:
+             raise AccessDenied(f"Only Initiator ({self.create_uid.name}) Or IT Admin Can Edit")
+        return super(MeetingEvent, self).write(vals)
