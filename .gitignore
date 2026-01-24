@@ -1,0 +1,28 @@
+# --- PYTHON TRASH (Wajib Ignore) ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- ODOO SYSTEM FILES (Jangan di-upload) ---
+.env
+odoo.conf
+filestore/
+sessions/
+addons/  # Kecuali kalau ini folder addons bawaan odoo yang didownload
+/var/
+/tmp/
+
+# --- DOCKER VOLUMES (Jika ada folder mapping di local) ---
+# Misalnya Bapak mapping volume db ke folder local, masukkan disini
+pgdata/
+odoo-web-data/
+odoo-db-data/
+
+# --- IDE SETTINGS (VS Code, dll) ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# --- LOG FILES ---
+*.log
