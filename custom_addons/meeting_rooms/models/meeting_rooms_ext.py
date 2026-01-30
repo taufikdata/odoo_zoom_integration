@@ -130,7 +130,7 @@ class MeetingRoomsExt(models.Model):
         return res
 
     # =========================================================
-    # LEGACY SYNC (DATA LAMA) - INI YANG BIKIN ERROR TADI
+    # LEGACY SYNC (DATA LAMA)
     # =========================================================
     @api.model
     def action_sync_legacy_data(self):

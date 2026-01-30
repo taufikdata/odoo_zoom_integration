@@ -737,7 +737,7 @@ END:VCALENDAR"""
     def action_cancel(self):
         MeetingRooms = self.env['meeting.rooms']
         for ev in self:
-            # 1. Custom Log Message agar mirip klien
+            # 1. Custom Log Message
             loc_name = ", ".join(ev.room_location_ids.mapped('name'))
             msg_body = f"Meeting <b>{ev.subject}</b> from {ev.start_date} to {ev.end_date} in <b>{loc_name}</b> Is Cancelled"
             ev.message_post(body=msg_body)
@@ -780,7 +780,7 @@ END:VCALENDAR"""
             ('date_deadline', '<', fields.Date.today())
         ])
 
-        # Hapus activity basi milik Meeting ROOMS (Anaknya) -> INI YANG KURANG TADI
+        # Hapus activity basi milik Meeting ROOMS (Anaknya)
         activities_rooms = self.env['mail.activity'].search([
             ('res_model', '=', 'meeting.rooms'),
             ('date_deadline', '<', fields.Date.today())
