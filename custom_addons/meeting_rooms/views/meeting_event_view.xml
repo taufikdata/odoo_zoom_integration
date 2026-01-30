@@ -1,0 +1,203 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+
+    <record id="meeting_event_calendar_view" model="ir.ui.view">
+        <field name="name">meeting_event_calendar_view</field>
+        <field name="model">meeting.event</field>
+        <field name="arch" type="xml">
+            <calendar string="Meeting Date"
+                      date_start="start_date"
+                      date_stop="end_date"
+                      mode="day"
+                      quick_add="False"
+                      color="state">
+                <field name="room_location_ids"/>
+                <field name="subject"/>
+                <field name="start_date"/>
+                <field name="end_date"/>
+                <field name="attendee"/>
+                <field name="state"/>
+            </calendar>
+        </field>
+    </record>
+
+    <record id="meeting_event_tree_view" model="ir.ui.view">
+        <field name="name">meeting_event_tree_view</field>
+        <field name="model">meeting.event</field>
+        <field name="arch" type="xml">
+            <tree string="Meeting Event">
+                <field name="subject"/>
+                <field name="room_location_ids" widget="many2many_tags"/>
+                <field name="virtual_room_id" optional="show"/>
+                <field name="start_date"/>
+                <field name="end_date"/>
+                <field name="attendee" widget="many2many_tags"/>
+                <field name="state"/>
+                <button name="unlink" string="Delete" class="btn-danger fa-trash-o" type="object"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="meeting_event_form_view" model="ir.ui.view">
+        <field name="name">meeting_event_form_view</field>
+        <field name="model">meeting.event</field>
+        <field name="arch" type="xml">
+            <form string="Meeting Event">
+                <header>
+                    <button name="action_confirm" 
+                            type="object" 
+                            states="draft" 
+                            string="Confirm" 
+                            class="btn-primary"/>
+                    
+                    <button name="action_generate_virtual_link" 
+                            type="object" 
+                            string="Generate Meeting Link" 
+                            class="oe_highlight"
+                            icon="fa-video-camera"
+                            attrs="{'invisible': ['|', '|', ('virtual_room_id', '=', False), ('state', '!=', 'confirm'), ('zoom_id', '!=', False)]}"/>
+
+                    <button name="action_get_ai_summary" 
+                            type="object" 
+                            string="Get AI Summary" 
+                            class="oe_highlight"
+                            icon="fa-magic"
+                            attrs="{'invisible': ['|', '|', ('virtual_room_id', '=', False), ('state', '!=', 'confirm'), ('zoom_id', '=', False)]}"/>
+
+                    <button name="action_cancel" 
+                            type="object" 
+                            states="confirm" 
+                            string="Cancel" 
+                            class="btn-secondary"
+                            confirm="PERINGATAN: Apakah Anda yakin ingin membatalkan Event ini? Tindakan ini akan otomatis membatalkan SEMUA Meeting Room yang terhubung."/>
+
+                    <button name="action_draft" 
+                            type="object" 
+                            states="cancel" 
+                            string="Set To Draft" 
+                            class="btn-secondary"
+                            confirm="PERINGATAN: Mengubah Event menjadi Draft akan mengubah status SEMUA Meeting Room menjadi Draft juga. Lanjutkan?"/>
+                            
+                    <field name="state" widget="statusbar" statusbar_visible="draft,confirm,cancel"/>
+                </header>
+
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="subject" required="1"/>
+                            <field name="room_location_ids" widget="many2many_tags"/>
+
+                            <field name="guest_partner_id" widget="res_partner_many2one" context="{'show_email': True}"/>
+                            
+                            <field name="virtual_room_id" 
+                                   widget="selection" 
+                                   string="Virtual Room Provider" 
+                                   placeholder="Leave empty for offline meeting"/>
+                            
+                            <field name="description"/>
+                            <field name="calendar_alarm"
+                                   domain="[('interval','=','minutes'),('alarm_type','=','notification')]"
+                                   widget="selection"/>
+                            <field name="recurrency"/>
+                        </group>
+
+                        <group>
+                            <field name="start_date"/>
+                            <field name="end_date"/>
+                            <field name="attendee"
+                                   options="{'no_create_edit': True,'no_create': True}"
+                                   widget="many2many_tags"
+                                   domain="[('login','ilike','@Tripper.com'),('id','!=',uid)]"/>
+                            <button name="create_calendar_web" type="object" string="Send Email &amp; Download ICS"/>
+                        </group>
+                    </group>
+
+                    <group>
+                        <field name="create_uid" string="Initiator"/>
+                        <field name="create_date" string="Create Date"/>
+                    </group>
+
+                    <notebook>
+                        <page string="Room Bookings">
+                            <field name="meeting_room_ids">
+                                <tree string="Generated Bookings" 
+                                      decoration-danger="state=='cancel'" 
+                                      decoration-info="state=='draft'" 
+                                      decoration-success="state=='confirm'">
+                                    <field name="room_location"/>
+                                    <field name="start_date"/>
+                                    <field name="end_date"/>
+                                    <field name="state" widget="badge"/>
+                                </tree>
+                            </field>
+                        </page>
+
+                        <page string="Virtual Meeting Info" attrs="{'invisible': [('zoom_id', '=', False)]}">
+                            
+                            <group string="Connection Details">
+                                <group>
+                                    <field name="zoom_id" string="Meeting ID" readonly="1" class="oe_inline" style="font-weight: bold; font-size: 1.2em;"/>
+                                </group>
+                                <group>
+                                    <field name="zoom_link" widget="url" string="Join URL"/>
+                                    <field name="zoom_start_url" widget="url" string="Start URL (Host Only)" groups="base.group_system"/>
+                                </group>
+                            </group>
+
+                            <separator string="Invitation Details"/>
+                            <p class="text-muted">
+                                Copy text below to send via WhatsApp or Email manually.
+                            </p>
+                            <field name="zoom_invitation" nolabel="1" style="background-color: #f9f9f9; padding: 10px; border-radius: 5px; font-family: monospace;"/>
+
+                            <separator string="AI Summary Result"/>
+                            <field name="ai_summary"/>
+                        </page>
+
+                        <page attrs="{'invisible': [('recurrency', '=', False)]}" string="Recurrence">
+                            <group>
+                                <group>
+                                    <field name="rrule_type" attrs="{'required': [('recurrency', '=', True)]}"/>
+                                </group>
+                                <group>
+                                    <field name="final_date" attrs="{'required': [('recurrency', '=', True)]}"/>
+                                </group>
+                            </group>
+                        </page>
+
+                        <page string="IT Settings" groups="base.group_system">
+                            <group>
+                                <group>
+                                    <field name="version"/>
+                                </group>
+                                <group>
+                                    <field name="calendar_file"/>
+                                </group>
+                            </group>
+                        </page>
+                    </notebook>
+                </sheet>
+
+                <div class="oe_chatter">
+                    <field name="message_follower_ids" widget="mail_followers" groups="base.group_user"/>
+                    <field name="message_ids" widget="mail_thread"/>
+                    <field name="activity_ids" widget="mail_activity"/>
+                </div>
+            </form>
+        </field>
+    </record>
+
+    <record model="ir.actions.act_window" id="action_meeting_event">
+        <field name="name">Meeting Events</field>
+        <field name="type">ir.actions.act_window</field>
+        <field name="res_model">meeting.event</field>
+        <field name="view_mode">calendar,tree,form</field>
+    </record>
+
+    <menuitem name="Meeting Events"
+              id="menu_meeting_event"
+              parent="meeting_rooms.menu_meeting_rooms"
+              action="action_meeting_event"
+              sequence="1"/> 
+
+</odoo>

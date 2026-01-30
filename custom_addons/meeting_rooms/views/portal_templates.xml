@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <template id="portal_booking_template" name="Booking Page">
+        <t t-call="web.login_layout">
+            <style>
+                body { background-color: #f3f4f6; }
+                .calendly-card {
+                    background: white; border-radius: 8px;
+                    box-shadow: 0 4px 25px rgba(0,0,0,0.05);
+                    max-width: 1000px; margin: 50px auto; min-height: 600px;
+                }
+                .time-slot-btn {
+                    display: block; width: 100%; text-align: center; padding: 10px 0;
+                    margin-bottom: 10px; border: 1px solid #3b82f6; color: #3b82f6;
+                    border-radius: 4px; font-weight: 600; text-decoration: none;
+                }
+                .time-slot-btn:hover {
+                    background-color: #3b82f6; color: white;
+                }
+            </style>
+
+            <div class="container-fluid">
+                <div class="calendly-card">
+                    <div class="row h-100 g-0">
+                        <div class="col-md-4 p-5 border-right text-center">
+                            <img t-attf-src="/web/image/res.users/#{host.id}/image_128" style="width:80px; height:80px; border-radius:50%;" alt="Host"/>
+                            <h4 class="mt-3"><t t-esc="host.name"/></h4>
+                            <p class="text-muted">60 Min Meeting</p>
+                        </div>
+                        <div class="col-md-8 p-5">
+                            <h3 class="font-weight-bold mb-4">Select Date &amp; Time (Asia/Singapore)</h3>
+                            <div class="row">
+                                <t t-foreach="dates" t-as="day">
+                                    <div class="col-md-4 mb-4">
+                                        <div class="text-center font-weight-bold mb-2">
+                                            <t t-esc="day['date_str']"/>
+                                        </div>
+                                        <t t-foreach="day['slots']" t-as="slot">
+                                            <a t-attf-href="/booking/details?token=#{token}&amp;time_str=#{slot['val']}" 
+                                               class="time-slot-btn">
+                                                <t t-esc="slot['time_str']"/>
+                                            </a>
+                                        </t>
+                                        <t t-if="not day['slots']">
+                                            <div class="text-center small text-muted">No slots</div>
+                                        </t>
+                                    </div>
+                                </t>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </t>
+    </template>
+
+    <template id="portal_booking_form_template" name="Booking Details">
+        <t t-call="web.login_layout">
+            <div class="container mt-5">
+                <div class="card shadow-sm" style="max-width: 600px; margin: 0 auto;">
+                    <div class="card-body p-4">
+                        <h4 class="mb-4">Enter Meeting Details</h4>
+                        <form action="/booking/submit" method="POST">
+                            <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
+                            <input type="hidden" name="token" t-att-value="token"/>
+                            
+                            <input type="hidden" name="time_str" t-att-value="time_str"/>
+                            
+                            <div class="form-group">
+                                <label class="font-weight-bold text-muted small">Selected Time</label>
+                                <input type="text" class="form-control" readonly="readonly" t-att-value="display_time" 
+                                       style="background-color: #e9ecef; font-weight:bold; color:#2c3e50;"/>
+                            </div>
+
+                            <div class="form-group">
+                                <label class="font-weight-bold text-muted small">Your Name</label>
+                                <input type="text" name="name" class="form-control" required="required" t-att-value="default_name" placeholder="John Doe"/>
+                            </div>
+
+                            <div class="form-group">
+                                <label class="font-weight-bold text-muted small">Your Email</label>
+                                <input type="email" name="email" class="form-control" required="required" t-att-value="default_email" placeholder="john@example.com"/>
+                            </div>
+
+                            <div class="form-group">
+                                <label class="font-weight-bold text-muted small">Topic / Subject (Optional)</label>
+                                <input type="text" name="subject" class="form-control" placeholder="e.g. Project Discussion"/>
+                            </div>
+                            
+                            <div class="mt-4">
+                                <button type="submit" class="btn btn-primary btn-block" style="background-color: #00A09D; border: none; padding: 12px; font-weight:bold;">
+                                    Confirm Booking
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </t>
+    </template>
+</odoo>

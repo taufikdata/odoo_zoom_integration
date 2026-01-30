@@ -1,5 +1,5 @@
 {
-    'name': "Meeting Rooms",
+    'name': "Meeting System",
 
     'summary': """
         Short (1 phrase/line) summary of the module's purpose, used as
@@ -19,13 +19,21 @@
     'version': '0.1',
 
     # any module necessary for this one to work correctly
-    'depends': ['base', 'calendar', 'mail', 'contacts'],
+    'depends': ['base', 'calendar', 'mail', 'contacts', 'website'],
 
     # always loaded
     'data': [
         'security/ir.model.access.csv',
+        'security/meeting_security.xml',
         'views/view.xml',
+        'views/virtual_room.xml',
+        'views/meeting_event_view.xml',
+        'views/booking_link_view.xml',
+        'views/meeting_rooms_ext_view.xml',
         'static/src/html/index.xml',
+        'data/data_sync.xml',
+        'data/cron_job.xml',
+        'views/portal_templates.xml',
     ],
 
 }

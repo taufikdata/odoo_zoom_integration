@@ -1,68 +1,46 @@
-from odoo import models, fields, api
-from datetime import timedelta, datetime
+from odoo import fields, models, api, _
+from datetime import datetime, timedelta, date
+from odoo.exceptions import AccessDenied, UserError
 import pytz
-from odoo.exceptions import ValidationError, UserError, AccessDenied
-import requests
-import json
+import subprocess
 import base64
 
-# =============================================================================
-# 1. MODEL BARU: VIRTUAL ROOM (ZOOM ACCOUNTS)
-# =============================================================================
-class VirtualRoom(models.Model):
-    _name = 'virtual.room'
-    _description = 'Virtual Room (Zoom Accounts)'
+# put POSIX 'Etc/*' entries at the end to avoid confusing users - see bug 1086728
+_tzs = [(tz, tz) for tz in sorted(pytz.all_timezones, key=lambda tz: tz if not tz.startswith('Etc/') else '_')]
+def _tz_get(self):
+    return _tzs
 
-    name = fields.Char("Account Name", required=True, help="Contoh: Zoom Pro HR, Zoom Pro IT")
-    zoom_account_id = fields.Char("Zoom Account ID", required=True)
-    zoom_client_id = fields.Char("Zoom Client ID", required=True)
-    zoom_client_secret = fields.Char("Zoom Client Secret", required=True)
-    
-    def action_test_connection(self):
-        self.ensure_one()
-        try:
-            url = "https://zoom.us/oauth/token"
-            auth_str = f"{self.zoom_client_id}:{self.zoom_client_secret}"
-            b64_auth = base64.b64encode(auth_str.encode()).decode()
-            
-            headers = {
-                "Authorization": f"Basic {b64_auth}",
-                "Content-Type": "application/x-www-form-urlencoded"
-            }
-            params = {
-                "grant_type": "account_credentials",
-                "account_id": self.zoom_account_id
-            }
-            
-            response = requests.post(url, headers=headers, params=params)
-            
-            if response.status_code == 200:
-                return {
-                    'type': 'ir.actions.client',
-                    'tag': 'display_notification',
-                    'params': {
-                        'title': 'Connection Successful!',
-                        'message': 'Credentials are valid. You can use this account.',
-                        'type': 'success',
-                        'sticky': False,
-                    }
-                }
-            else:
-                raise UserError(f"Connection Failed! Zoom says: {response.text}")
-                
-        except Exception as e:
-            raise UserError(f"Error connecting to Zoom: {str(e)}")
+class MeetingRoomsLocation(models.Model):
+    _name = 'room.location'
+    name = fields.Char("Location")
+    active = fields.Boolean("active ?", default=True)
+    location_address = fields.Text("Address")
+    location_description = fields.Text("Description")
+    tz = fields.Selection(_tz_get, string='Timezone', default=lambda self: self._context.get('tz'),
+                          help="When printing documents and exporting/importing data, time values are computed according to this timezone.\n"
+                               "If the timezone is not set, UTC (Coordinated Universal Time) is used.\n"
+                               "Anywhere else, time values are computed according to the time offset of your web client.")
+    tz_offset = fields.Char("Offset", compute = '_compute_offset')
 
-# =============================================================================
-# 2. MODEL LAMA: MEETING ROOMS (LEGACY)
-# =============================================================================
+    def _compute_offset(self):
+        for record in self:
+            timezone = record.tz or 'UTC'  # Default to UTC if no timezone is set
+
+            time_zone = pytz.timezone(timezone)
+            current_time = datetime.now(pytz.utc).astimezone(time_zone)
+
+            timezone_offset = current_time.utcoffset().total_seconds() / 60
+
+            offset_hours = int(timezone_offset // 60)
+            offset_minutes = int(abs(timezone_offset) % 60)
+
+            # Format the offset (e.g., +08:00, -05:30, etc.)
+            record.tz_offset = f"{'+' if offset_hours >= 0 else '-'}{abs(offset_hours):02d}{abs(offset_minutes):02d}"
+
+
 class MeetingRooms(models.Model):
     _inherit = ['mail.thread', 'mail.activity.mixin']
     _name = 'meeting.rooms'
-    
-    ### PERBAIKAN 1: AGAR TULISAN "FALSE" HILANG, GANTI JADI JUDUL ###
-    _rec_name = 'subject' 
-    
     name = fields.Char("Name")
     subject = fields.Char("Subject")
     room_location = fields.Many2one("room.location", string="Location", required=True)
@@ -83,298 +61,430 @@ class MeetingRooms(models.Model):
     email_sent = fields.Boolean("Email Sent?")
     version = fields.Integer("Version", default=1)
     calendar_file = fields.Binary(string="Calendar File")
+    
 
-    def action_confirm(self):
-        for rec in self:
-            tz_name = rec.room_location.tz if rec.room_location else "Asia/Singapore"
-            tz = pytz.timezone(tz_name)
+    virtual_room_id = fields.Many2one('virtual.room', string="Virtual Room")
+
+    # =========================================================================
+    # FUNGSI SECURITY (GEMBOK) - BARU
+    # =========================================================================
+    def _check_readonly_access(self):
+        """
+        Memastikan record hanya bisa dibuat/diedit/dihapus jika membawa 
+        konteks 'bypass_security_check' (yang dikirim dari Meeting Events).
+        Jika user mencoba manual dari menu Rooms, akan ditolak.
+        """
+        if self.env.context.get('bypass_security_check'):
+            return True
+            
+        raise UserError(_(
+            "AKSES DITOLAK!\n\n"
+            "Anda tidak bisa membuat, mengedit, atau menghapus Booking secara manual di menu ini.\n"
+            "Silakan pergi ke menu 'Meeting Events' untuk mengatur jadwal."
+        ))
+
+    def send_email_meeting(self):
+        for rec in self :
+            tz = pytz.timezone(rec.room_location.tz or "Asia/Singapore")
             current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
             offset_hours = current_offset.total_seconds() / 3600
-            
             start_time = rec.start_date + timedelta(hours=offset_hours)
             end_time = rec.end_date + timedelta(hours=offset_hours)
-            
-            formatted_start_date = start_time.strftime('%b %d, %Y')
-            start_time_str = start_time.strftime('%H:%M')
-            end_time_str = end_time.strftime('%H:%M')
-            
-            duration_delta = rec.end_date - rec.start_date
-            total_seconds = duration_delta.total_seconds()
-            hours, remainder = divmod(total_seconds, 3600)
-            minutes, _ = divmod(remainder, 60)
-            duration_str = f"{int(hours)} hours " if hours > 0 else ""
-            duration_str += f"{int(minutes)} minutes" if minutes > 0 else ""
+            create_time = rec.create_date + timedelta(hours=offset_hours)
+            write_time = rec.write_date + timedelta(hours=offset_hours)
+            reminder = int(rec.calendar_alarm.duration) if rec.calendar_alarm.duration else 1
+            attendee_str = ''
+            for user in rec.attendee :
+                attendee_str += f'ATTENDEE;ROLE=REQ-PARTICIPANT;RSVP=TRUE;CN="{user.display_name}":mailto:{user.email}'
+                if user != rec.attendee[-1]:
+                    attendee_str += '\n'
+            icsContent = f"""BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//ZContent.net//Zap Calendar 1.0//EN
+CALSCALE:GREGORIAN
+METHOD:REQUEST
 
-            for user in rec.attendee:
-                rec.activity_schedule(
-                    'meeting_rooms.mail_act_meeting_rooms_approval',
-                    note=f"""
-                        Hi <b>{user.name}</b>,<br/><br/>
-                        I hope this message finds you well. <b>{rec.create_uid.name}</b> has invited you to the "<b>{rec.subject}</b>" meeting.<br/><br/>
-                        <table border="0">
-                            <tbody>
-                                <tr><td style="width:80px;">Date</td><td>: {formatted_start_date}</td></tr>
-                                <tr><td>Time</td><td>: {start_time_str} - {end_time_str} ({tz_name}'s Time)</td></tr>
-                                <tr><td>Duration</td><td>: {duration_str}</td></tr>
-                                <tr><td>Location</td><td>: {rec.room_location.name}</td></tr>
-                            </tbody>
-                        </table>
-                        <br/>Please prepare accordingly.
-                    """,
-                    user_id=user.id,
-                    date_deadline=rec.start_date.date()
-                )
-            rec.state = 'confirm'
+BEGIN:VTIMEZONE
+TZID:{rec.room_location.tz}
+X-LIC-LOCATION:${rec.room_location.tz}
+BEGIN:STANDARD
+DTSTART:19700101T000000
+TZOFFSETFROM:{rec.room_location.tz_offset}
+TZOFFSETTO:{rec.room_location.tz_offset}
+TZNAME:${rec.room_location.tz}
+END:STANDARD
+END:VTIMEZONE
 
-    def action_cancel(self):
-        for rec in self:
-            rec.activity_feedback(['meeting_rooms.mail_act_meeting_rooms_approval'])
-            rec.message_post(body=f"Meeting {rec.subject} Is Cancelled", message_type='comment', subtype_xmlid='mail.mt_note')
-            rec.state = 'cancel'
+BEGIN:VEVENT
+UID:{rec.id}
+SEQUENCE:{rec.version}
+SUMMARY:{rec.subject}
+DTSTAMP:{create_time}
+LAST-MODIFIED:{write_time}
+DTSTART;TZID={rec.room_location.tz}:{start_time}
+DTEND;TZID={rec.room_location.tz}:{end_time}
+LOCATION:{rec.room_location.name}
+DESCRIPTION:{rec.description}
+ORGANIZER;PARTSTAT=ACCEPTED;CN="{rec.create_uid.display_name}":mailto:{rec.create_uid.email}
+{attendee_str}
+BEGIN:VALARM
+TRIGGER:-PT${reminder}M
+ACTION:DISPLAY
+DESCRIPTION:Reminder
+END:VALARM
+END:VEVENT
+END:VCALENDAR`;
+            """
+            filename = f"{rec.subject}.ics"
+            with open(filename, 'w') as file:
+                file.write(icsContent)
 
-    def action_draft(self):
-        for rec in self:
-            rec.state = 'draft'
-
-# =============================================================================
-# 3. MODEL TAMBAHAN: ROOM LOCATION
-# =============================================================================
-class RoomLocation(models.Model):
-    _name = 'room.location'
-    _description = 'Room Location'
-
-    name = fields.Char("Room Name", required=True)
-    location_address = fields.Char("Address")
-    location_description = fields.Text("Description")
-    active = fields.Boolean("Active", default=True)
-    tz = fields.Selection([('Asia/Singapore', 'Asia/Singapore'), ('Asia/Jakarta', 'Asia/Jakarta')], string="Timezone", default='Asia/Singapore')
-
-# =============================================================================
-# 4. MODEL BARU: MEETING EVENT (MULTI LOCATION & ZOOM)
-# =============================================================================
-class MeetingEvent(models.Model):
-    _name = 'meeting.event'
-    _inherit = ['mail.thread', 'mail.activity.mixin']
-    _description = 'Meeting Event (Multi Location)'
-    
-    ### PERBAIKAN TAMPILAN UNTUK MEETING EVENT JUGA ###
-    _rec_name = 'subject'
-
-    subject = fields.Char("Subject", required=True)
-    room_location_ids = fields.Many2many('room.location', string="Locations", required=True)
-    virtual_room_id = fields.Many2one('virtual.room', string="Virtual Room (Zoom)")
-    
-    start_date = fields.Datetime("Start", required=True)
-    end_date = fields.Datetime("End", required=True)
-    attendee = fields.Many2many("res.users", string="Attendee")
-    description = fields.Text("Description")
-    calendar_alarm = fields.Many2one("calendar.alarm", string="Reminder")
-    state = fields.Selection([('draft', 'Draft'),('confirm', 'Confirm'),('cancel', 'Cancelled')], string='Status', default='draft', tracking=True)
-    
-    recurrency = fields.Boolean('Recurrent')
-    rrule_type = fields.Selection([('daily', 'Daily'),('weekly', 'Weekly')], string='Recurrence')
-    final_date = fields.Date('Repeat Until')
-    
-    zoom_link = fields.Char("Zoom Link", readonly=True)
-    meeting_summary = fields.Text("Meeting Summary")
-    
-    version = fields.Integer("Version", default=1)
-    calendar_file = fields.Binary(string="Calendar File")
-
-    # --- SATPAM (CONSTRAINS) ---
-    @api.constrains('start_date', 'end_date', 'room_location_ids', 'attendee', 'virtual_room_id')
-    def _check_availability(self):
-        for rec in self:
-            if rec.start_date >= rec.end_date:
-                raise AccessDenied("Start Date must be earlier than End Date")
-
-            # 1. SATPAM LOKASI FISIK
-            clashing_rooms = self.env['meeting.rooms'].search([
-                ('room_location', 'in', rec.room_location_ids.ids),
-                ('state', '=', 'confirm'),
-                ('start_date', '<', rec.end_date),
-                ('end_date', '>', rec.start_date)
-            ])
-            if clashing_rooms:
-                room_names = ", ".join(clashing_rooms.mapped('room_location.name'))
-                raise AccessDenied(f"ROOM CLASH! The following rooms are busy: {room_names}")
-
-            # 2. SATPAM PESERTA
-            for person in rec.attendee:
-                busy_schedule = self.env['meeting.rooms'].search([
-                    ('attendee', 'in', person.id),
-                    ('state', '=', 'confirm'),
-                    ('start_date', '<', rec.end_date),
-                    ('end_date', '>', rec.start_date)
-                ])
-                if busy_schedule:
-                    raise AccessDenied(f"ATTENDEE BUSY! {person.name} is attending: '{busy_schedule[0].subject}'")
-
-            # 3. SATPAM VIRTUAL ROOM (ZOOM)
-            if rec.virtual_room_id:
-                clashing_zoom = self.search([
-                    ('virtual_room_id', '=', rec.virtual_room_id.id),
-                    ('state', '=', 'confirm'),
-                    ('id', '!=', rec.id),
-                    ('start_date', '<', rec.end_date),
-                    ('end_date', '>', rec.start_date)
-                ])
-                if clashing_zoom:
-                    raise AccessDenied(f"ZOOM ACCOUNT BUSY! Account '{rec.virtual_room_id.name}' is in use.")
-
-    # --- ZOOM TOKEN HELPER ---
-    def get_zoom_access_token(self, account):
-        url = "https://zoom.us/oauth/token"
-        auth_str = f"{account.zoom_client_id}:{account.zoom_client_secret}"
-        b64_auth = base64.b64encode(auth_str.encode()).decode()
-
-        headers = {
-            "Authorization": f"Basic {b64_auth}",
-            "Content-Type": "application/x-www-form-urlencoded"
-        }
-        params = {"grant_type": "account_credentials", "account_id": account.zoom_account_id}
-        response = requests.post(url, headers=headers, params=params)
-        if response.status_code == 200:
-            return response.json().get("access_token")
-        else:
-            raise UserError(f"Failed to get Zoom Token from account {account.name}. Check credentials!")
-
-    # --- ACTION BUTTONS ---
-    def action_create_zoom_link(self):
-        for rec in self:
-            if not rec.virtual_room_id:
-                raise UserError("Please select a Virtual Room (Zoom Account) first!")
-
-            access_token = self.get_zoom_access_token(rec.virtual_room_id)
-            headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-            start_time_str = rec.start_date.strftime('%Y-%m-%dT%H:%M:%SZ')
-            
-            payload = {
-                "topic": rec.subject,
-                "type": 2, 
-                "start_time": start_time_str,
-                "duration": 60,
-                "timezone": "UTC",
-                "settings": {"host_video": True, "participant_video": True, "join_before_host": False, "mute_upon_entry": True, "auto_recording": "none"}
-            }
-            
-            response = requests.post("https://api.zoom.us/v2/users/me/meetings", headers=headers, data=json.dumps(payload))
-            
-            if response.status_code == 201:
-                meeting_data = response.json()
-                rec.zoom_link = meeting_data.get("join_url")
-                return {
-                    'type': 'ir.actions.client',
-                    'tag': 'display_notification',
-                    'params': {'title': 'Success', 'message': f'Zoom Link Created!', 'type': 'success', 'sticky': False}
-                }
-            else:
-                raise UserError(f"Failed to create Zoom meeting. Error: {response.text}")
-
-    def action_confirm(self):
-        for rec in self:
-            first_loc = rec.room_location_ids[0] if rec.room_location_ids else False
-            tz_name = first_loc.tz if first_loc else "Asia/Singapore"
-            tz = pytz.timezone(tz_name)
-            current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
-            offset_hours = current_offset.total_seconds() / 3600
-            
-            start_time = rec.start_date + timedelta(hours=offset_hours)
-            end_time = rec.end_date + timedelta(hours=offset_hours)
-            
-            formatted_start_date = start_time.strftime('%b %d, %Y')
-            start_time_str = start_time.strftime('%H:%M')
-            end_time_str = end_time.strftime('%H:%M')
-            
-            duration_delta = rec.end_date - rec.start_date
-            total_seconds = duration_delta.total_seconds()
-            hours, remainder = divmod(total_seconds, 3600)
-            minutes, _ = divmod(remainder, 60)
-            duration_str = f"{int(hours)} hours " if hours > 0 else ""
-            duration_str += f"{int(minutes)} minutes" if minutes > 0 else ""
-            
-            loc_names = ", ".join(rec.room_location_ids.mapped('name'))
-
-            # 1. Activity Notification
-            for user in rec.attendee:
-                rec.activity_schedule(
-                    'meeting_rooms.mail_act_meeting_rooms_approval',
-                    note=f"""
-                        Hi <b>{user.name}</b>,<br/><br/>
-                        I hope this message finds you well. <b>{rec.create_uid.name}</b> has invited you to the "<b>{rec.subject}</b>" meeting.<br/><br/>
-                        <table border="0">
-                            <tbody>
-                                <tr><td style="width:80px;">Date</td><td>: {formatted_start_date}</td></tr>
-                                <tr><td>Time</td><td>: {start_time_str} - {end_time_str} ({tz_name}'s Time)</td></tr>
-                                <tr><td>Duration</td><td>: {duration_str}</td></tr>
-                                <tr><td>Location</td><td>: {loc_names}</td></tr>
-                            </tbody>
-                        </table>
-                        <br/>Please prepare accordingly.
-                    """,
-                    user_id=user.id,
-                    date_deadline=rec.start_date.date()
-                )
-
-            # 2. Sinkronisasi ke Modul Lama
-            meeting_rooms_obj = self.env['meeting.rooms']
-            for location in rec.room_location_ids:
-                existing = meeting_rooms_obj.search([
-                    ('subject', '=', rec.subject),
-                    ('room_location', '=', location.id),
-                    ('start_date', '=', rec.start_date),
-                    ('state', '!=', 'cancel')
-                ])
-                if not existing:
-                    meeting_rooms_obj.create({
-                        ### PERBAIKAN 2: ISI JUGA FIELD 'name' AGAR TIDAK KOSONG ###
-                        'name': rec.subject, 
-                        'subject': rec.subject,
-                        'room_location': location.id,
-                        'start_date': rec.start_date,
-                        'end_date': rec.end_date,
-                        'description': rec.description,
-                        'attendee': [(6, 0, rec.attendee.ids)],
-                        'calendar_alarm': rec.calendar_alarm.id,
-                        'state': 'confirm'
+            with open(filename, 'rb') as file:
+                attachment_calendar = self.env['ir.attachment'].sudo().search(
+                    [('res_model', '=', 'meeting.rooms'), ('type', '=', 'binary'), ('res_field', '=', 'calendar_file'),('res_id', '=', rec.id)])
+                if attachment_calendar:
+                    attachment_calendar.unlink()
+                    attachment = self.env['ir.attachment'].sudo().create({
+                        'name': filename,
+                        'type': 'binary',
+                        'res_model': 'meeting.rooms',
+                        'res_field': 'calendar_file',
+                        'res_id': rec.id,
+                        'res_name': filename,
+                        'datas': base64.b64encode(file.read()),
+                        'public': True
+                    })
+                else:
+                    attachment = self.env['ir.attachment'].sudo().create({
+                        'name': filename,
+                        'type': 'binary',
+                        'res_model': 'meeting.rooms',
+                        'res_field': 'calendar_file',
+                        'res_id': rec.id,
+                        'res_name': filename,
+                        'datas': base64.b64encode(file.read()),
+                        'public': True
                     })
 
+
+
+    def create_calendar_event(self):
+        for rec in self :
+            tz = pytz.timezone(rec.room_location.tz or "Asia/Singapore")
+            current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
+            offset_hours = current_offset.total_seconds() / 3600
+            start_time = rec.start_date + timedelta(hours=offset_hours)
+            end_time = rec.end_date + timedelta(hours=offset_hours)
+            start_day = start_time.day
+            start_month = start_time.month
+            start_year = start_time.year
+            start_hour = start_time.hour
+            start_minute = start_time.minute
+            start_second = start_time.second
+            end_day = end_time.day
+            end_month = end_time.month
+            end_year = end_time.year
+            end_hour = end_time.hour
+            end_minute = end_time.minute
+            end_second = end_time.second
+            subject = rec.subject
+            reminder = int(rec.calendar_alarm.duration) if rec.calendar_alarm.duration else 1
+            description = rec.description if rec.description else None
+
+            attendee = ''
+            for user in self.attendee :
+                if user.display_name and user.email :
+                    attendee += 'make new attendee at beginning of attendees with properties {display name:"%s", email:"%s"}\n' %(user.display_name,user.email)
+
+            applescript = """
+        set theStartDate to (current date) 
+        set year of theStartDate to %s
+        set month of theStartDate to %s
+        set day of theStartDate to %s
+        set hours of theStartDate to %s
+        set minutes of theStartDate to %s
+        set seconds of theStartDate to %s
+        set theEndDate to (current date) 
+        set year of theEndDate to %s
+        set month of theEndDate to %s
+        set day of theEndDate to %s
+        set hours of theEndDate to %s
+        set minutes of theEndDate to %s
+        set seconds of theEndDate to %s
+    
+        tell application "Calendar"
+        activate
+            tell calendar "Home"
+                set new_event to make new event at end of events with properties {summary:"%s", start date:theStartDate, end date:theEndDate, location:"%s", description:"%s"}
+            end tell
+            tell new_event
+                %s
+            end tell
+            tell new_event
+                make new sound alarm at end of sound alarms with properties {trigger interval:-%s, sound name:"Sosumi"}
+            end tell
+        end tell
+            """ % (start_year, start_month, start_day, start_hour, start_minute, start_second, end_year, end_month, end_day,
+                   end_hour, end_minute, end_second, subject,rec.room_location.name,description,attendee,reminder)
+
+            subprocess.run(['osascript', '-e', applescript])
+
+
+    def run_calendar(self):
+        for rec in self :
+            self.create_calendar_event()
+
+    def create_calendar_web(self):
+        return {
+            'name': "Create Calendar",
+            'type': 'ir.actions.act_url',
+            'url': f"/create-icalendar?id={self.id}",
+            'target': 'new',
+        }
+
+    def action_confirm(self):
+        for rec in self:
+            # 1. Hitung Timezone & Offset per record
+            tz = pytz.timezone(rec.room_location.tz or "Asia/Singapore")
+            current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
+            offset_hours = current_offset.total_seconds() / 3600
+
+            # 2. Hitung Waktu Start & End sesuai Timezone
+            start_time = rec.start_date + timedelta(hours=offset_hours)
+            end_time = rec.end_date + timedelta(hours=offset_hours)
+            
+            # 3. Format String untuk Tampilan (Date, Time Hours)
+            formatted_start_time = start_time.strftime('%b %d, %Y')
+            start_time_hours = start_time.strftime('%H:%M')
+            # formatted_end_time = end_time.strftime('%b %d, %Y %H:%M') # Tidak dipakai di note, tapi bisa disimpan kalau butuh
+            end_time_hours = end_time.strftime('%H:%M')
+
+            # 4. Hitung Durasi (Jam & Menit)
+            duration = end_time - start_time
+            meeting_hours, remainder = divmod(duration.total_seconds(), 3600)
+            meeting_minutes, meeting_seconds = divmod(remainder, 60)
+            
+            meeting_hours_str = ""
+            if meeting_hours > 0:
+                meeting_hours_str = f"{int(meeting_hours)} hours "
+
+            meeting_minutes_str = ""
+            if meeting_minutes > 0:
+                meeting_minutes_str = f"{int(meeting_minutes)} minutes"
+
+            # 5. Loop setiap attendee untuk kirim Activity dengan format HTML
+            for user in rec.attendee:
+                rec.activity_schedule(
+                    'meeting_rooms.mail_act_meeting_rooms_approval',
+                    note=f"""
+                        Hi <b>{user.name}</b>,<br/><br/>
+                        I hope this message finds you well. <b>{rec.create_uid.name}</b> has invited you to the "{rec.name}" meeting<br/><br/>
+                        <table border="0">
+                            <tbody>
+                                <tr>
+                                    <td style="width:80px;">Date</td>
+                                    <td>: {formatted_start_time}</td>
+                                </tr>
+                                <tr>
+                                    <td>Time</td>
+                                    <td>: {start_time_hours} - {end_time_hours} ({rec.room_location.tz}'s Time)</td>
+                                </tr>
+                                <tr>
+                                    <td>Duration</td>
+                                    <td>: {meeting_hours_str}{meeting_minutes_str}</td>
+                                </tr>
+                                <tr>
+                                    <td>Location</td>
+                                    <td>: {rec.room_location.name}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <br/>
+                    """,
+                    user_id=user.id,
+                    date_deadline=start_time.date() # Deadline activity diset ke hari H
+                )
+            
+            # 6. Ubah status jadi confirm
             rec.state = 'confirm'
 
     def action_cancel(self):
-        meeting_rooms_obj = self.env['meeting.rooms']
-        for rec in self:
+        tz = pytz.timezone(self.room_location.tz or "Asia/Singapore")
+        current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
+        offset_hours = current_offset.total_seconds() / 3600
+        for rec in self :
+            start_time = rec.start_date + timedelta(hours=offset_hours)
+            end_time = rec.end_date + timedelta(hours=offset_hours)
             rec.activity_feedback(['meeting_rooms.mail_act_meeting_rooms_approval'])
-            rec.message_post(body=f"Meeting Cancelled", message_type='comment', subtype_xmlid='mail.mt_note')
-            
-            # Sinkronisasi Cancel
-            linked_bookings = meeting_rooms_obj.search([
-                ('subject', '=', rec.subject),
-                ('start_date', '=', rec.start_date),
-                ('room_location', 'in', rec.room_location_ids.ids),
-                ('state', '!=', 'cancel')
-            ])
-            for booking in linked_bookings:
-                booking.action_cancel()
-
+            group = []
+            for user in rec.attendee :
+                group.append(user.partner_id.id)
+            value = {'partner_ids': group,
+                     'channel_ids': [],
+                     'body': f"Meeting {rec.subject} from {start_time} to {end_time} in {rec.room_location.name} Is Cancelled",
+                     'attachment_ids': [],
+                     'canned_response_ids': [],
+                     'message_type': 'comment',
+                     'subtype': 'mail.mt_note'}
+            rec.message_post(**value)
             rec.state = 'cancel'
 
     def action_draft(self):
-        meeting_rooms_obj = self.env['meeting.rooms']
-        for rec in self:
-            # Hapus data di modul lama agar bersih saat re-confirm
-            linked_bookings = meeting_rooms_obj.search([
-                ('subject', '=', rec.subject),
-                ('start_date', '=', rec.start_date),
-                ('room_location', 'in', rec.room_location_ids.ids)
-            ])
-            linked_bookings.unlink()
-            rec.state = 'draft'
+        self.state = 'draft'
 
-    def action_get_meeting_summary(self):
-        # Placeholder function
-        pass
-    
-    def action_send_email(self):
-        # Placeholder function
-        pass
+
+    def unlink(self):
+        # 1. CEK SECURITY DULU
+        self._check_readonly_access()
+
+        # 2. Logic Permission Lama
+        if self.create_uid != self.env.user and self.env.user.id not in [2,892,469]:
+            raise AccessDenied(f"Only Insiator ({self.create_uid.name}) Or IT Admin, Can Delete")
+        return super(MeetingRooms, self).unlink()
+
+    @api.constrains('start_date', 'end_date', 'room_location')
+    def _check_booking_validity(self):
+        tz = pytz.timezone(self.room_location.tz or "Asia/Singapore")
+        current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
+        offset_hours = current_offset.total_seconds() / 3600
+        for record in self:
+            if record.end_date <= record.start_date:
+                raise AccessDenied(_("End Date cannot be in the past"))
+            records = self.search([])
+            for rec in records :
+                start_time = rec.start_date + timedelta(hours=offset_hours)
+                end_time = rec.end_date + timedelta(hours=offset_hours)
+                if self.start_date > rec.start_date and self.end_date < rec.end_date and self.room_location == rec.room_location :
+                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time},  in {rec.room_location.name} Please Choose Another Schedule")
+                elif self.start_date > rec.start_date and self.start_date < rec.end_date and self.room_location == rec.room_location:
+                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time},in {rec.room_location.name} Please Choose Another Schedule")
+                elif self.end_date > rec.start_date and self.end_date < rec.end_date and self.room_location == rec.room_location :
+                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time},in {rec.room_location.name} Please Choose Another Schedule")
+                elif self.start_date < rec.start_date and self.end_date > rec.end_date and self.room_location == rec.room_location :
+                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time},in {rec.room_location.name} Please Choose Another Schedule")
+                # elif self.start_date < rec.start_date and self.end_date == rec.end_date and self.room_location == rec.room_location :
+                #     raise AccessDenied(f"Meeting Room Already Used from {rec.start_date} to {rec.end_date}, Please Choose Another Schedule")
+                elif self.start_date == rec.start_date and self.end_date > rec.end_date and self.room_location == rec.room_location :
+                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time},in {rec.room_location.name} Please Choose Another Schedule")
+                elif self.start_date == rec.start_date and self.end_date == rec.end_date and self.room_location == rec.room_location and self.id != rec.id :
+                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time},in {rec.room_location.name} Please Choose Another Schedule")
+
+    @api.model
+    def create(self, vals):
+        # 1. CEK SECURITY DULU (PALING ATAS)
+        self._check_readonly_access()
+
+        vals['name'] = vals['subject']
+        values = super(MeetingRooms, self).create(vals)
+        tz = pytz.timezone(values.room_location.tz or "Asia/Singapore")
+        current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
+        offset_hours = current_offset.total_seconds() / 3600
+        start_time = values.start_date + timedelta(hours=offset_hours)
+        end_time = values.end_date + timedelta(hours=offset_hours)
+        formatted_start_time = start_time.strftime('%b %d, %Y')
+        start_time_hours = start_time.strftime('%H:%M')
+        formatted_end_time = end_time.strftime('%b %d, %Y %H:%M')
+        end_time_hours = end_time.strftime('%H:%M')
+        duration = end_time - start_time
+        meeting_hours, remainder = divmod(duration.total_seconds(), 3600)
+        meeting_minutes, meeting_seconds = divmod(remainder, 60)
+        meeting_hours_str = ""
+        if meeting_hours > 0:
+            meeting_hours_str = f"{int(meeting_hours)} hours "
+
+        meeting_minutes_str = ""
+        if meeting_minutes > 0:
+            meeting_minutes_str = f"{int(meeting_minutes)} minutes"
+
+        for user in values.attendee:
+            values.activity_schedule(
+                'meeting_rooms.mail_act_meeting_rooms_approval',
+                note=f"""
+                        Hi <b>{user.name}</b>,<br/><br/>
+                        I hope this message finds you well. <b>{values.create_uid.name}</b> has invited you to the "{values.name}" meeting<br/><br/>
+                        <table border="0">
+                            <tbody>
+                                <tr>
+                                    <td style="width:80px;">Date</td>
+                                    <td>: {formatted_start_time}</td>
+                                </tr>
+                                <tr>
+                                    <td>Time</td>
+                                    <td>: {start_time_hours} - {end_time_hours} ({values.room_location.tz}'s Time)</td>
+                                </tr>
+                                <tr>
+                                    <td>Duration</td>
+                                    <td>: {meeting_hours_str}{meeting_minutes_str}</td>
+                                </tr>
+                                <tr>
+                                    <td>Location</td>
+                                    <td>: {values.room_location.name}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <br/>
+                        """,
+                user_id=user.id,
+                date_deadline=start_time)
+        
+        if values.recurrency :
+            # PENTING: Tambahkan .with_context(bypass_security_check=True) agar sistem bisa create otomatis
+            if values.rrule_type == "daily" :
+                delta = timedelta(days=1)
+                start_date = values.start_date
+                end_date = values.end_date
+                date_count = values.start_date.date()
+                while date_count <= values.final_date :
+                    start_date += delta
+                    end_date += delta
+                    date_count += delta
+                    value = {
+                        'subject' : values.subject,
+                        'name' : values.name,
+                        'start_date' : start_date,
+                        'end_date' : end_date,
+                        'description' : values.description,
+                        'calendar_alarm' : values.calendar_alarm.id,
+                        'attendee' : values.attendee,
+                        'room_location' : values.room_location.id
+                    }
+                    meeting = self.env['meeting.rooms'].sudo().with_context(bypass_security_check=True).create(value)
+                    # meeting.create_calendar_event()
+
+            elif values.rrule_type == "weekly":
+                delta = timedelta(days=7)
+                start_date = values.start_date
+                end_date = values.end_date
+                date_count = values.start_date.date()
+                while date_count <= values.final_date:
+                    start_date += delta
+                    end_date += delta
+                    date_count += delta
+                    value = {
+                        'subject': values.subject,
+                        'name': values.name,
+                        'start_date': start_date,
+                        'end_date': end_date,
+                        'description': values.description,
+                        'calendar_alarm': values.calendar_alarm.id,
+                        'attendee': values.attendee,
+                        'room_location': values.room_location.id
+                    }
+                    meeting = self.env['meeting.rooms'].sudo().with_context(bypass_security_check=True).create(value)
+                    # meeting.create_calendar_event()
+        return values
+
+    def write(self,vals):
+        # 1. CEK SECURITY DULU
+        self._check_readonly_access()
+
+        # Jika membawa kartu sakti 'force_sync', langsung izinkan (Bypass Satpam)
+        if self.env.context.get('force_sync'):
+            return super(MeetingRooms, self).write(vals)
+        #========================================
+
+        # Logika satpam 
+        if self.create_uid != self.env.user and self.env.user.id not in [2,892,469] :
+            raise AccessDenied(f"Only Insiator ({self.create_uid.name}) Or IT Admin, Can Edit")
+        else :
+            return super(MeetingRooms, self).write(vals)

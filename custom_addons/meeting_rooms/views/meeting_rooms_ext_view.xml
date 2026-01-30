@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <record id="meeting_rooms_form_ext_event" model="ir.ui.view">
+        <field name="name">meeting.rooms.form.ext.event.link</field>
+        <field name="model">meeting.rooms</field>
+        <field name="inherit_id" ref="meeting_rooms.meeting_rooms_from_view"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='subject']" position="after">
+                <field name="meeting_event_id" invisible="1"/>
+            </xpath>
+        </field>
+    </record>
+</odoo>

@@ -1,20 +1,36 @@
-<?xml version="1.0" encoding="UTF-8" ?>
+<?xml version="1.0" encoding="UTF-8"?>
 <odoo>
     <template id="meeting_rooms_html" name="Meeting Rooms HTML">
         <t t-name="meeting_rooms.meeting_rooms_html">
             <html lang="en">
                 <head>
-                    <title>Meeting Rooms Create Calendar</title>
                     <meta charset="utf-8"/>
                     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-                    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.6.0/jquery.min.js"/>
-                    <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.4.1/js/bootstrap.min.js"/>
-                    <link type="text/scss" rel="stylesheet" href="/meeting_rooms/static/src/css/index.css"/>
+                    <title>Meeting Rooms Create Calendar</title>
+
+                    <!-- IMPORTANT: jangan self-closing untuk script -->
+                    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+                    <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.4.1/js/bootstrap.min.js"></script>
                     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-                    <script type="text/javascript" src="/meeting_rooms/static/src/js/index.js"/>
-<!--                    <script type="text/javascript" src="/web/static/lib/moment/moment.js"/>-->
+
+                    <!-- CSS: jangan pakai text/scss langsung -->
+                    <link rel="stylesheet" href="/meeting_rooms/static/src/css/index.css"/>
+                    
+                    <!-- Module JS -->
+                    <script type="text/javascript" src="/meeting_rooms/static/src/js/index.js"></script>
                 </head>
+
                 <body>
+                    <!-- Debug marker: kalau ini tampil, berarti halaman kebuka -->
+                    <div style="font-family: Arial, sans-serif; font-size: 12px; padding: 10px; color: #555;">
+                        Generating calendar invitation...
+                    </div>
+
+                    <!-- Debug marker in console -->
+                    <script type="text/javascript">
+                        console.log("[meeting_rooms] /create-icalendar page loaded");
+                    </script>
+
                     <input type="hidden" id="start_date" t-att-value="start_date"/>
                     <input type="hidden" id="end_date" t-att-value="end_date"/>
                     <input type="hidden" id="subject" t-att-value="docs.subject"/>
@@ -33,6 +49,5 @@
                 </body>
             </html>
         </t>
-
     </template>
 </odoo>

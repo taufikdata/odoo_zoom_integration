@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_virtual_room_form" model="ir.ui.view">
+        <field name="name">virtual.room.form</field>
+        <field name="model">virtual.room</field>
+        <field name="arch" type="xml">
+            <form string="Virtual Room Configuration">
+                <sheet>
+                    <div class="oe_title">
+                        <label for="name" class="oe_edit_only"/>
+                        <h1><field name="name" placeholder="e.g. Official Zoom Account"/></h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="active"/>
+                            <field name="provider" widget="radio"/> 
+                            <field name="email" placeholder="host@company.com"/>
+                        </group>
+                        
+                        <group string="Static Link Configuration" attrs="{'invisible': [('provider', '!=', 'google_meet')]}">
+                            <field name="static_link" widget="url" attrs="{'required': [('provider', '=', 'google_meet')]}"/>
+                            <div class="text-muted" colspan="2">
+                                Paste link Google Meet permanen Anda di sini (contoh: https://meet.google.com/abc-defg-hij).
+                            </div>
+                        </group>
+
+                        <group string="API Credentials" attrs="{'invisible': [('provider', '=', 'google_meet')]}">
+                            <field name="zoom_account_id" string="Account ID (Zoom) / Tenant ID (Teams)" attrs="{'required': [('provider', '!=', 'google_meet')]}"/>
+                            <field name="zoom_client_id" string="Client ID" attrs="{'required': [('provider', '!=', 'google_meet')]}"/>
+                            <field name="zoom_client_secret" string="Client Secret" password="True" attrs="{'required': [('provider', '!=', 'google_meet')]}"/>
+                        </group>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_virtual_room_tree" model="ir.ui.view">
+        <field name="name">virtual.room.tree</field>
+        <field name="model">virtual.room</field>
+        <field name="arch" type="xml">
+            <tree string="Virtual Rooms">
+                <field name="name"/>
+                <field name="provider"/>
+                <field name="email"/>
+                <field name="active"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="action_virtual_room" model="ir.actions.act_window">
+        <field name="name">Virtual Room Accounts</field>
+        <field name="res_model">virtual.room</field>
+        <field name="view_mode">tree,form</field>
+    </record>
+
+    <menuitem id="menu_virtual_room" 
+              name="Virtual Rooms" 
+              parent="menu_meeting_rooms" 
+              action="action_virtual_room" 
+              sequence="30"/>
+</odoo>
