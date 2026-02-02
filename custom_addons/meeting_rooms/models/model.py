@@ -12,6 +12,8 @@ def _tz_get(self):
 
 class MeetingRoomsLocation(models.Model):
     _name = 'room.location'
+    _description = 'Meeting Room Location'
+
     name = fields.Char("Location")
     active = fields.Boolean("active ?", default=True)
     location_address = fields.Text("Address")
@@ -41,6 +43,8 @@ class MeetingRoomsLocation(models.Model):
 class MeetingRooms(models.Model):
     _inherit = ['mail.thread', 'mail.activity.mixin']
     _name = 'meeting.rooms'
+    _description = 'Meeting Rooms Booking'
+
     name = fields.Char("Name")
     subject = fields.Char("Subject")
     room_location = fields.Many2one("room.location", string="Location", required=True)
@@ -62,18 +66,12 @@ class MeetingRooms(models.Model):
     version = fields.Integer("Version", default=1)
     calendar_file = fields.Binary(string="Calendar File")
     
-
     virtual_room_id = fields.Many2one('virtual.room', string="Virtual Room")
 
     # =========================================================================
-    # FUNGSI SECURITY (GEMBOK) - BARU
+    # FUNGSI SECURITY (GEMBOK)
     # =========================================================================
     def _check_readonly_access(self):
-        """
-        Memastikan record hanya bisa dibuat/diedit/dihapus jika membawa 
-        konteks 'bypass_security_check' (yang dikirim dari Meeting Events).
-        Jika user mencoba manual dari menu Rooms, akan ditolak.
-        """
         if self.env.context.get('bypass_security_check'):
             return True
             
@@ -211,7 +209,7 @@ END:VCALENDAR`;
         set hours of theEndDate to %s
         set minutes of theEndDate to %s
         set seconds of theEndDate to %s
-    
+        
         tell application "Calendar"
         activate
             tell calendar "Home"
@@ -244,69 +242,8 @@ END:VCALENDAR`;
 
     def action_confirm(self):
         for rec in self:
-            # 1. Hitung Timezone & Offset per record
-            tz = pytz.timezone(rec.room_location.tz or "Asia/Singapore")
-            current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
-            offset_hours = current_offset.total_seconds() / 3600
-
-            # 2. Hitung Waktu Start & End sesuai Timezone
-            start_time = rec.start_date + timedelta(hours=offset_hours)
-            end_time = rec.end_date + timedelta(hours=offset_hours)
-            
-            # 3. Format String untuk Tampilan (Date, Time Hours)
-            formatted_start_time = start_time.strftime('%b %d, %Y')
-            start_time_hours = start_time.strftime('%H:%M')
-            # formatted_end_time = end_time.strftime('%b %d, %Y %H:%M') # Tidak dipakai di note, tapi bisa disimpan kalau butuh
-            end_time_hours = end_time.strftime('%H:%M')
-
-            # 4. Hitung Durasi (Jam & Menit)
-            duration = end_time - start_time
-            meeting_hours, remainder = divmod(duration.total_seconds(), 3600)
-            meeting_minutes, meeting_seconds = divmod(remainder, 60)
-            
-            meeting_hours_str = ""
-            if meeting_hours > 0:
-                meeting_hours_str = f"{int(meeting_hours)} hours "
-
-            meeting_minutes_str = ""
-            if meeting_minutes > 0:
-                meeting_minutes_str = f"{int(meeting_minutes)} minutes"
-
-            # 5. Loop setiap attendee untuk kirim Activity dengan format HTML
-            for user in rec.attendee:
-                rec.activity_schedule(
-                    'meeting_rooms.mail_act_meeting_rooms_approval',
-                    note=f"""
-                        Hi <b>{user.name}</b>,<br/><br/>
-                        I hope this message finds you well. <b>{rec.create_uid.name}</b> has invited you to the "{rec.name}" meeting<br/><br/>
-                        <table border="0">
-                            <tbody>
-                                <tr>
-                                    <td style="width:80px;">Date</td>
-                                    <td>: {formatted_start_time}</td>
-                                </tr>
-                                <tr>
-                                    <td>Time</td>
-                                    <td>: {start_time_hours} - {end_time_hours} ({rec.room_location.tz}'s Time)</td>
-                                </tr>
-                                <tr>
-                                    <td>Duration</td>
-                                    <td>: {meeting_hours_str}{meeting_minutes_str}</td>
-                                </tr>
-                                <tr>
-                                    <td>Location</td>
-                                    <td>: {rec.room_location.name}</td>
-                                </tr>
-                            </tbody>
-                        </table>
-                        <br/>
-                    """,
-                    user_id=user.id,
-                    date_deadline=start_time.date() # Deadline activity diset ke hari H
-                )
-            
-            # 6. Ubah status jadi confirm
             rec.state = 'confirm'
+            # SUDAH BERSIH DARI ACTIVITY
 
     def action_cancel(self):
         tz = pytz.timezone(self.room_location.tz or "Asia/Singapore")
@@ -332,18 +269,18 @@ END:VCALENDAR`;
     def action_draft(self):
         self.state = 'draft'
 
-
     def unlink(self):
-        # 1. CEK SECURITY DULU
         self._check_readonly_access()
-
-        # 2. Logic Permission Lama
-        if self.create_uid != self.env.user and self.env.user.id not in [2,892,469]:
-            raise AccessDenied(f"Only Insiator ({self.create_uid.name}) Or IT Admin, Can Delete")
+        is_manager = self.env.user.has_group('meeting_rooms.group_meeting_manager')
+        if self.create_uid != self.env.user and not is_manager:
+            raise AccessDenied(f"Only Initiator ({self.create_uid.name}) Or Meeting Administrator can delete")
         return super(MeetingRooms, self).unlink()
 
     @api.constrains('start_date', 'end_date', 'room_location')
     def _check_booking_validity(self):
+        if self.env.context.get('skip_double_booking_check'):
+            return
+
         tz = pytz.timezone(self.room_location.tz or "Asia/Singapore")
         current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
         offset_hours = current_offset.total_seconds() / 3600
@@ -352,8 +289,11 @@ END:VCALENDAR`;
                 raise AccessDenied(_("End Date cannot be in the past"))
             records = self.search([])
             for rec in records :
+                if rec.id == record.id:
+                    continue
                 start_time = rec.start_date + timedelta(hours=offset_hours)
                 end_time = rec.end_date + timedelta(hours=offset_hours)
+                
                 if self.start_date > rec.start_date and self.end_date < rec.end_date and self.room_location == rec.room_location :
                     raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time},  in {rec.room_location.name} Please Choose Another Schedule")
                 elif self.start_date > rec.start_date and self.start_date < rec.end_date and self.room_location == rec.room_location:
@@ -362,8 +302,6 @@ END:VCALENDAR`;
                     raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time},in {rec.room_location.name} Please Choose Another Schedule")
                 elif self.start_date < rec.start_date and self.end_date > rec.end_date and self.room_location == rec.room_location :
                     raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time},in {rec.room_location.name} Please Choose Another Schedule")
-                # elif self.start_date < rec.start_date and self.end_date == rec.end_date and self.room_location == rec.room_location :
-                #     raise AccessDenied(f"Meeting Room Already Used from {rec.start_date} to {rec.end_date}, Please Choose Another Schedule")
                 elif self.start_date == rec.start_date and self.end_date > rec.end_date and self.room_location == rec.room_location :
                     raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time},in {rec.room_location.name} Please Choose Another Schedule")
                 elif self.start_date == rec.start_date and self.end_date == rec.end_date and self.room_location == rec.room_location and self.id != rec.id :
@@ -371,64 +309,36 @@ END:VCALENDAR`;
 
     @api.model
     def create(self, vals):
-        # 1. CEK SECURITY DULU (PALING ATAS)
         self._check_readonly_access()
 
         vals['name'] = vals['subject']
         values = super(MeetingRooms, self).create(vals)
-        tz = pytz.timezone(values.room_location.tz or "Asia/Singapore")
-        current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
-        offset_hours = current_offset.total_seconds() / 3600
-        start_time = values.start_date + timedelta(hours=offset_hours)
-        end_time = values.end_date + timedelta(hours=offset_hours)
-        formatted_start_time = start_time.strftime('%b %d, %Y')
-        start_time_hours = start_time.strftime('%H:%M')
-        formatted_end_time = end_time.strftime('%b %d, %Y %H:%M')
-        end_time_hours = end_time.strftime('%H:%M')
-        duration = end_time - start_time
-        meeting_hours, remainder = divmod(duration.total_seconds(), 3600)
-        meeting_minutes, meeting_seconds = divmod(remainder, 60)
-        meeting_hours_str = ""
-        if meeting_hours > 0:
-            meeting_hours_str = f"{int(meeting_hours)} hours "
-
-        meeting_minutes_str = ""
-        if meeting_minutes > 0:
-            meeting_minutes_str = f"{int(meeting_minutes)} minutes"
-
-        for user in values.attendee:
-            values.activity_schedule(
-                'meeting_rooms.mail_act_meeting_rooms_approval',
-                note=f"""
-                        Hi <b>{user.name}</b>,<br/><br/>
-                        I hope this message finds you well. <b>{values.create_uid.name}</b> has invited you to the "{values.name}" meeting<br/><br/>
-                        <table border="0">
-                            <tbody>
-                                <tr>
-                                    <td style="width:80px;">Date</td>
-                                    <td>: {formatted_start_time}</td>
-                                </tr>
-                                <tr>
-                                    <td>Time</td>
-                                    <td>: {start_time_hours} - {end_time_hours} ({values.room_location.tz}'s Time)</td>
-                                </tr>
-                                <tr>
-                                    <td>Duration</td>
-                                    <td>: {meeting_hours_str}{meeting_minutes_str}</td>
-                                </tr>
-                                <tr>
-                                    <td>Location</td>
-                                    <td>: {values.room_location.name}</td>
-                                </tr>
-                            </tbody>
-                        </table>
-                        <br/>
-                        """,
-                user_id=user.id,
-                date_deadline=start_time)
         
+        # REVISI PENTING: KODE ACTIVITY SCHEDULE DI SINI SUDAH SAYA HAPUS.
+        # SEKARANG CREATE MURNI HANYA MEMBUAT DATA TANPA NOTIFIKASI SPAM.
+
+        if not self.env.context.get('skip_double_booking_check'):
+            tz = pytz.timezone(values.room_location.tz or "Asia/Singapore")
+            current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
+            offset_hours = current_offset.total_seconds() / 3600
+            start_time = values.start_date + timedelta(hours=offset_hours)
+            end_time = values.end_date + timedelta(hours=offset_hours)
+            formatted_start_time = start_time.strftime('%b %d, %Y')
+            start_time_hours = start_time.strftime('%H:%M')
+            formatted_end_time = end_time.strftime('%b %d, %Y %H:%M')
+            end_time_hours = end_time.strftime('%H:%M')
+            duration = end_time - start_time
+            meeting_hours, remainder = divmod(duration.total_seconds(), 3600)
+            meeting_minutes, meeting_seconds = divmod(remainder, 60)
+            meeting_hours_str = ""
+            if meeting_hours > 0:
+                meeting_hours_str = f"{int(meeting_hours)} hours "
+
+            meeting_minutes_str = ""
+            if meeting_minutes > 0:
+                meeting_minutes_str = f"{int(meeting_minutes)} minutes"
+
         if values.recurrency :
-            # PENTING: Tambahkan .with_context(bypass_security_check=True) agar sistem bisa create otomatis
             if values.rrule_type == "daily" :
                 delta = timedelta(days=1)
                 start_date = values.start_date
@@ -449,7 +359,6 @@ END:VCALENDAR`;
                         'room_location' : values.room_location.id
                     }
                     meeting = self.env['meeting.rooms'].sudo().with_context(bypass_security_check=True).create(value)
-                    # meeting.create_calendar_event()
 
             elif values.rrule_type == "weekly":
                 delta = timedelta(days=7)
@@ -471,20 +380,16 @@ END:VCALENDAR`;
                         'room_location': values.room_location.id
                     }
                     meeting = self.env['meeting.rooms'].sudo().with_context(bypass_security_check=True).create(value)
-                    # meeting.create_calendar_event()
         return values
 
     def write(self,vals):
-        # 1. CEK SECURITY DULU
         self._check_readonly_access()
-
-        # Jika membawa kartu sakti 'force_sync', langsung izinkan (Bypass Satpam)
         if self.env.context.get('force_sync'):
             return super(MeetingRooms, self).write(vals)
-        #========================================
 
-        # Logika satpam 
-        if self.create_uid != self.env.user and self.env.user.id not in [2,892,469] :
-            raise AccessDenied(f"Only Insiator ({self.create_uid.name}) Or IT Admin, Can Edit")
+        is_manager = self.env.user.has_group('meeting_rooms.group_meeting_manager')
+
+        if self.create_uid != self.env.user and not is_manager :
+            raise AccessDenied(f"Only Initiator ({self.create_uid.name}) Or Meeting Administrator can Edit")
         else :
             return super(MeetingRooms, self).write(vals)

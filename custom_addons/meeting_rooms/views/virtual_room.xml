@@ -5,6 +5,15 @@
         <field name="model">virtual.room</field>
         <field name="arch" type="xml">
             <form string="Virtual Room Configuration">
+                <header>
+                    <button name="action_test_connection" 
+                            string="Test API Connection" 
+                            type="object" 
+                            class="btn-secondary" 
+                            icon="fa-plug"
+                            attrs="{'invisible': [('provider', '=', 'google_meet')]}"/>
+                </header>
+                
                 <sheet>
                     <div class="oe_title">
                         <label for="name" class="oe_edit_only"/>

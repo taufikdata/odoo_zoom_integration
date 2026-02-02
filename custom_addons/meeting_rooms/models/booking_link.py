@@ -48,7 +48,10 @@ class MeetingBookingLink(models.Model):
 
     @api.depends('user_id')
     def _compute_permissions(self):
-        is_admin_user = self.env.user.has_group('base.group_system')
+        # REVISI: Cek Group Meeting Manager, BUKAN System Administrator
+        # Sebelumnya: has_group('base.group_system') -> Salah sasaran
+        is_admin_user = self.env.user.has_group('meeting_rooms.group_meeting_manager')
+        
         for rec in self:
             rec.is_current_user = (rec.user_id == self.env.user)
             rec.is_admin = is_admin_user
@@ -86,21 +89,13 @@ class MeetingBookingLink(models.Model):
             'target': 'current',
         }
 
-    # ========================================================
-    # TRIK KHUSUS: RECOMPUTE SAAT UPGRADE
-    # ========================================================
     def init(self):
         """
         Fungsi ini dipanggil otomatis saat Module di-Upgrade.
         Gunanya untuk memaksa update field has_booking_link di ResUsers.
         """
-        # Cari semua user yang punya link
         all_links = self.search([])
         users_with_links = all_links.mapped('user_id')
         
-        # Set True untuk mereka
         if users_with_links:
             users_with_links.write({'has_booking_link': True})
-            
-        # Set False untuk sisanya (Opsional, biar bersih)
-        # self.env['res.users'].search([('id', 'not in', users_with_links.ids)]).write({'has_booking_link': False})

@@ -8,11 +8,12 @@ class MeetingRoomsExt(models.Model):
     # ---------------------------------------------------------------------
     # LINK FIELD
     # ---------------------------------------------------------------------
+    # REVISI: Ganti 'set null' jadi 'cascade' agar anak ikut terhapus
     meeting_event_id = fields.Many2one(
         'meeting.event',
         string="Meeting Event Ref",
         index=True,
-        ondelete='set null'
+        ondelete='cascade' 
     )
 
     # =========================================================
@@ -136,50 +137,80 @@ class MeetingRoomsExt(models.Model):
     def action_sync_legacy_data(self):
         """
         Dijalankan otomatis saat Upgrade Module via XML.
-        Menghubungkan Room yatim piatu ke Event.
+        Menangani overlap data lama agar tidak error saat install.
         """
+        # Cari room yang belum punya bapak (Event)
         orphaned_rooms = self.search([('meeting_event_id', '=', False)])
         
         MeetingEvent = self.env['meeting.event']
         linked_count = 0
         created_count = 0
+        skipped_count = 0
 
         for room in orphaned_rooms:
+            # 1. Cek apakah Event sudah ada?
             parent_event = MeetingEvent.search([
                 ('subject', '=', room.subject),
                 ('start_date', '=', room.start_date),
                 ('end_date', '=', room.end_date)
             ], limit=1)
 
+            # Context SAKTI: 
+            # - mail_activity_automation_skip: Matikan otomatis activity Odoo standar
+            # - skip_double_booking_check: Custom context untuk bypass constrain overlap kita
+            ctx_sync = {
+                'force_sync': True, 
+                'bypass_security_check': True,
+                'mail_activity_automation_skip': True, 
+                'mail_create_nosubscribe': True,
+                'skip_double_booking_check': True # Bypass constrain
+            }
+
             if parent_event:
                 # KASUS A: Link ke Event existing
-                # PERBAIKAN: Tambahkan bypass_security_check=True
-                room.with_context(force_sync=True, bypass_security_check=True).write({'meeting_event_id': parent_event.id})
+                room.with_context(ctx_sync).write({'meeting_event_id': parent_event.id})
                 linked_count += 1
             else:
                 # KASUS B: Buatkan Event baru
+                # REVISI: Cek manual apakah ada event lain yang overlap?
+                # Jika overlap parah, kita buat eventnya dalam status DRAFT saja agar aman.
+                
+                # Logic sederhana deteksi overlap di Event lain
+                overlap = MeetingEvent.search_count([
+                    ('start_date', '<', room.end_date),
+                    ('end_date', '>', room.start_date),
+                    ('state', '=', 'confirm') # Asumsi yang confirm yang valid
+                ])
+                
+                state_to_set = 'confirm'
+                if overlap > 0:
+                    state_to_set = 'draft' # Turunkan jadi draft jika bentrok
+                
                 vals = {
                     'subject': room.subject,
                     'start_date': room.start_date,
                     'end_date': room.end_date,
                     'description': room.description,
                     'attendee': [(6, 0, room.attendee.ids)],
-                    'state': 'confirm', 
+                    'state': state_to_set, 
                 }
                 
                 if room.room_location:
                     vals['room_location_ids'] = [(4, room.room_location.id)]
                 
-                if room.calendar_alarm:
+                if getattr(room, 'calendar_alarm', False):
                     vals['calendar_alarm'] = room.calendar_alarm.id
 
-                # Create Event Baru
-                new_event = MeetingEvent.with_context(skip_rooms_sync=True).create(vals)
+                # Create Event Baru dengan Context Aman
+                new_event = MeetingEvent.with_context(ctx_sync).create(vals)
                 
                 # Update Room dengan referensi baru
-                # PERBAIKAN: Tambahkan bypass_security_check=True
-                room.with_context(force_sync=True, bypass_security_check=True).write({'meeting_event_id': new_event.id})
-                created_count += 1
+                room.with_context(ctx_sync).write({'meeting_event_id': new_event.id})
+                
+                if state_to_set == 'draft':
+                    skipped_count += 1
+                else:
+                    created_count += 1
 
-        if linked_count or created_count:
-            print(f"=== [SYNC LEGACY] Linked: {linked_count}, Created New Events: {created_count} ===")
+        if linked_count or created_count or skipped_count:
+            print(f"=== [SYNC LEGACY] Linked: {linked_count}, Created: {created_count}, Overlap(Draft): {skipped_count} ===")

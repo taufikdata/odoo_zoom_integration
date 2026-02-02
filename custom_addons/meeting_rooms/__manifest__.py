@@ -23,15 +23,15 @@
 
     # always loaded
     'data': [
-        'security/ir.model.access.csv',
         'security/meeting_security.xml',
+        'security/ir.model.access.csv',
         'views/view.xml',
         'views/virtual_room.xml',
         'views/meeting_event_view.xml',
         'views/booking_link_view.xml',
         'views/meeting_rooms_ext_view.xml',
         'static/src/html/index.xml',
-        'data/data_sync.xml',
+        # 'data/data_sync.xml',
         'data/cron_job.xml',
         'views/portal_templates.xml',
     ],

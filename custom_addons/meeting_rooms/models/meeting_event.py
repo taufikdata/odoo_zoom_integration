@@ -56,11 +56,12 @@ class MeetingEvent(models.Model):
     )
     # ========================================
 
-    zoom_id = fields.Char(string="Meeting ID", readonly=True) 
-    zoom_link = fields.Char(string="Join URL", readonly=True)
-    zoom_invitation = fields.Text(string="Invitation Text")
-    zoom_start_url = fields.Char(string='Start URL (Host Only)', readonly=True)
-    ai_summary = fields.Html(string='AI Summary Result', sanitize=False)
+    # REVISI: Poin 7 - Jangan copy data Zoom/Summary saat Duplicate (copy=False)
+    zoom_id = fields.Char(string="Meeting ID", readonly=True, copy=False) 
+    zoom_link = fields.Char(string="Join URL", readonly=True, copy=False)
+    zoom_invitation = fields.Text(string="Invitation Text", copy=False)
+    zoom_start_url = fields.Char(string='Start URL', readonly=True, copy=False)
+    ai_summary = fields.Html(string='AI Summary Result', sanitize=False, copy=False)
 
     recurrency = fields.Boolean('Recurrent', help="Recurrent Meeting")
     rrule_type = fields.Selection([
@@ -90,11 +91,15 @@ class MeetingEvent(models.Model):
     def _regenerate_all_activities(self):
         """ 
         LOGIKA 'WIPE & REGENERATE':
-        1. Hapus SEMUA activity lama yang terhubung ke Event ini (Termasuk punya Budi yg sudah dihapus).
+        1. Hapus SEMUA activity lama yang terhubung ke Event ini (Termasuk punya orang yg sudah dihapus).
         2. Buat activity BARU untuk attendee yang sekarang ada.
         """
         self.ensure_one()
         ev = self
+
+        # Jangan buat activity jika sedang dalam proses SYNC data legacy
+        if self.env.context.get('mail_activity_automation_skip'):
+            return
 
         # === 1. HAPUS BERSIH (WIPE) ===
         # Cari activity apapun yang nempel di record ini
@@ -129,7 +134,7 @@ class MeetingEvent(models.Model):
 
         virtual_room_info = ""
         if ev.zoom_link:
-                virtual_room_info = f"<br/><br/><b>Online Meeting:</b> <a href='{ev.zoom_link}'>Click to Join</a>"
+                virtual_room_info = f"<br/><br/><b>Online Meeting:</b> <a href='{ev.zoom_link}' target='_blank'>Click to Join</a>"
         elif ev.virtual_room_id:
             virtual_room_info = f"<br/>(Virtual Room: {ev.virtual_room_id.name})"
 
@@ -171,9 +176,23 @@ class MeetingEvent(models.Model):
     # WRITE / EDIT LOGIC (PERBAIKAN DISINI)
     # ==========================
     def write(self, vals):
-        # 1. Cek apakah ada perubahan Info Penting?
-        trigger_fields = ['start_date', 'end_date', 'room_location_ids', 'subject', 'attendee', 'virtual_room_id', 'zoom_link']
-        is_update_needed = any(f in vals for f in trigger_fields)
+        # 1. Cek apakah jadwal atau virtual room berubah?
+        # REVISI: Poin 6 - Otomatis Regenerate jika jadwal berubah
+        reschedule_fields = ['start_date', 'end_date', 'virtual_room_id']
+        is_rescheduling = any(f in vals for f in reschedule_fields)
+
+        # Jika sedang reschedule dan sudah ada Zoom Link sebelumnya, kita harus "Reset" linknya
+        # karena link lama mungkin sudah tidak valid jamnya.
+        if is_rescheduling:
+            vals['zoom_id'] = False
+            vals['zoom_link'] = False
+            vals['zoom_start_url'] = False
+            vals['zoom_invitation'] = False
+            vals['ai_summary'] = False # Summary lama tidak relevan lagi
+
+        # Field lain yang memicu update activity
+        trigger_fields = ['room_location_ids', 'subject', 'attendee', 'zoom_link']
+        is_update_needed = is_rescheduling or any(f in vals for f in trigger_fields)
         
         # 2. Simpan dulu perubahan datanya ke database
         res = super(MeetingEvent, self).write(vals)
@@ -182,15 +201,15 @@ class MeetingEvent(models.Model):
         for ev in self:
             # Sync Booking Ruangan (Meeting Rooms) jika bukan dari context skip
             if not self.env.context.get('skip_rooms_sync'):
-                # _sync_rooms_from_event sudah punya logika:
-                # Cek existing -> Update. Kalau gak ada -> Create. Kalau dibuang -> Cancel.
-                # Jadi Booking Ruangan AMAN.
                 ev._sync_rooms_from_event()
 
             # Update Activity Peserta (Hanya kalau status Confirm)
             if ev.state == 'confirm' and is_update_needed:
-                # Panggil fungsi Wipe & Regenerate di atas
                 ev._regenerate_all_activities()
+
+            # REVISI: Jika tadi di-reset karena reschedule, beri notifikasi di chatter
+            if is_rescheduling and ev.state == 'confirm':
+                ev.message_post(body="<b>Jadwal/Ruangan Berubah.</b> Link Meeting lama telah dihapus. Silakan klik tombol 'Generate Meeting Link' lagi.")
                         
         return res
 
@@ -207,7 +226,7 @@ class MeetingEvent(models.Model):
         return True
 
     # ==========================================================
-    # VIRTUAL ROOM ACTIONS & HELPERS (TIDAK BERUBAH)
+    # VIRTUAL ROOM ACTIONS & HELPERS
     # ==========================================================
     def action_generate_virtual_link(self):
         self.ensure_one()
@@ -294,7 +313,9 @@ class MeetingEvent(models.Model):
         })
 
         self._generate_invitation_text("Zoom Meeting", join_url, meeting_id, password)
-        self.message_post(body=f"Zoom Meeting Created: <a href='{join_url}'>{join_url}</a>")
+        
+        # REVISI: Poin 5 - Link open in new tab (target="_blank")
+        self.message_post(body=f"Zoom Meeting Created: <a href='{join_url}' target='_blank'>{join_url}</a>")
 
     def _logic_generate_google_meet(self):
         static_link = getattr(self.virtual_room_id, 'static_link', False) 
@@ -308,7 +329,9 @@ class MeetingEvent(models.Model):
         })
         
         self._generate_invitation_text("Google Meet", static_link)
-        self.message_post(body=f"Google Meet Link Attached: <a href='{static_link}'>{static_link}</a>")
+        
+        # REVISI: Poin 5 - Link open in new tab (target="_blank")
+        self.message_post(body=f"Google Meet Link Attached: <a href='{static_link}' target='_blank'>{static_link}</a>")
 
     def _get_teams_token(self):
         tenant_id = self.virtual_room_id.zoom_account_id
@@ -375,7 +398,9 @@ class MeetingEvent(models.Model):
             })
             
             self._generate_invitation_text("Microsoft Teams", join_url)
-            self.message_post(body=f"Teams Meeting Created: <a href='{join_url}'>Join Teams</a>")
+            
+            # REVISI: Poin 5 - Link open in new tab (target="_blank")
+            self.message_post(body=f"Teams Meeting Created: <a href='{join_url}' target='_blank'>Join Teams</a>")
 
         except Exception as e:
             raise UserError(_("Gagal membuat meeting Teams: %s") % e)
@@ -694,7 +719,7 @@ END:VCALENDAR"""
         # 4. Kirim Email (Hanya jika ada penerima)
         virtual_room_info = ""
         if rec.zoom_link:
-             virtual_room_info = f"<br/><br/><b>Online Meeting:</b> <a href='{rec.zoom_link}'>Click to Join</a>"
+             virtual_room_info = f"<br/><br/><b>Online Meeting:</b> <a href='{rec.zoom_link}' target='_blank'>Click to Join</a>"
         elif rec.virtual_room_id:
             virtual_room_info = f"<br/>(Virtual Room: {rec.virtual_room_id.name})"
 

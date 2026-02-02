@@ -27,7 +27,7 @@
                         <group>
                             <field name="user_id" 
                                 attrs="{'readonly': [('is_admin', '=', False), ('create_date', '!=', False)]}" 
-                                domain="[('has_booking_link', '=', False), ('share', '=', False)]"
+                                domain="[('share', '=', False)]"
                                 options="{'no_create': True, 'no_open': True}"/>
                                 
                             <field name="active" widget="boolean_toggle" 
@@ -58,17 +58,19 @@
                 <field name="booking_url"/>
                 <field name="active"/>
                 <field name="is_current_user"/>
-                <field name="is_admin"/> <templates>
+                <field name="is_admin"/> 
+                <templates>
                     <t t-name="kanban-box">
-                        <t t-if="record.is_admin.raw_value or record.is_current_user.raw_value">
-                             <div class="oe_kanban_global_click oe_kanban_card p-3">
-                                 <t t-call="kanban-content"/>
-                             </div>
+                        <t t-if="record.is_current_user.raw_value or record.is_admin.raw_value">
+                            <div class="oe_kanban_global_click oe_kanban_card p-3">
+                                <t t-call="kanban-content"/>
+                            </div>
                         </t>
+                        
                         <t t-else="">
-                             <div class="oe_kanban_card p-3" style="cursor: default;">
-                                 <t t-call="kanban-content"/>
-                             </div>
+                            <div class="oe_kanban_card p-3" style="cursor: default;">
+                                <t t-call="kanban-content"/>
+                            </div>
                         </t>
                     </t>
 
