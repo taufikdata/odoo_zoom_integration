@@ -21,6 +21,10 @@
     # any module necessary for this one to work correctly
     'depends': ['base', 'calendar', 'mail', 'contacts', 'website'],
 
+    'external_dependencies': {
+        'python': ['requests', 'pytz', 'urllib3'],
+    },
+
     # always loaded
     'data': [
         'security/meeting_security.xml',

@@ -24,6 +24,25 @@ class MeetingEvent(models.Model):
     _rec_name = 'subject'
 
     # ==========================================================
+    # 0. NEW FIELDS: UTC DISPLAY
+    # ==========================================================
+    start_date_utc_str = fields.Char("Start (UTC)", compute='_compute_utc_display')
+    end_date_utc_str = fields.Char("End (UTC)", compute='_compute_utc_display')
+
+    @api.depends('start_date', 'end_date')
+    def _compute_utc_display(self):
+        for rec in self:
+            if rec.start_date:
+                rec.start_date_utc_str = rec.start_date.strftime("%Y-%m-%d %H:%M:%S UTC")
+            else:
+                rec.start_date_utc_str = ""
+            
+            if rec.end_date:
+                rec.end_date_utc_str = rec.end_date.strftime("%Y-%m-%d %H:%M:%S UTC")
+            else:
+                rec.end_date_utc_str = ""
+
+    # ==========================================================
     # AUTO-ADD HOST TO ATTENDEE
     # ==========================================================
     @api.model
@@ -48,15 +67,12 @@ class MeetingEvent(models.Model):
     description = fields.Text("Description")
     calendar_alarm = fields.Many2one("calendar.alarm", string="Reminder")
 
-    # === NEW FIELD: KHUSUS TAMU EKSTERNAL ===
     guest_partner_id = fields.Many2one(
         'res.partner', 
         string="External Guest", 
-        help="Data tamu yang booking dari portal"
+        help="Guest data from booking portal"
     )
-    # ========================================
 
-    # REVISI: Poin 7 - Jangan copy data Zoom/Summary saat Duplicate (copy=False)
     zoom_id = fields.Char(string="Meeting ID", readonly=True, copy=False) 
     zoom_link = fields.Char(string="Join URL", readonly=True, copy=False)
     zoom_invitation = fields.Text(string="Invitation Text", copy=False)
@@ -86,31 +102,21 @@ class MeetingEvent(models.Model):
     )
 
     # ==========================================================
-    # LOGIC UTAMA: GENERATE ACTIVITY (DIPANGGIL SAAT CONFIRM & EDIT)
+    # LOGIC: REGENERATE ACTIVITY
     # ==========================================================
     def _regenerate_all_activities(self):
-        """ 
-        LOGIKA 'WIPE & REGENERATE':
-        1. Hapus SEMUA activity lama yang terhubung ke Event ini (Termasuk punya orang yg sudah dihapus).
-        2. Buat activity BARU untuk attendee yang sekarang ada.
-        """
         self.ensure_one()
         ev = self
 
-        # Jangan buat activity jika sedang dalam proses SYNC data legacy
         if self.env.context.get('mail_activity_automation_skip'):
             return
 
-        # === 1. HAPUS BERSIH (WIPE) ===
-        # Cari activity apapun yang nempel di record ini
         old_activities = self.env['mail.activity'].search([
             ('res_id', '=', ev.id),
             ('res_model', '=', 'meeting.event')
         ])
-        # Hapus semuanya! Biar Budi yang sudah dikick notifikasinya hilang.
         old_activities.unlink()
 
-        # === 2. SIAPKAN DATA BARU ===
         loc = ev.room_location_ids[0] if ev.room_location_ids else False
         tz_name = loc.tz if loc and loc.tz else "Asia/Singapore"
         loc_name = ", ".join(ev.room_location_ids.mapped('name'))
@@ -138,8 +144,6 @@ class MeetingEvent(models.Model):
         elif ev.virtual_room_id:
             virtual_room_info = f"<br/>(Virtual Room: {ev.virtual_room_id.name})"
 
-        # === 3. BUAT BARU (REGENERATE) ===
-        # Loop hanya untuk attendee yang SEKARANG ada
         for user in ev.attendee:
             ev.activity_schedule(
                 'meeting_rooms.mail_act_meeting_rooms_approval',
@@ -156,7 +160,11 @@ class MeetingEvent(models.Model):
                             </tr>
                             <tr>
                                 <td>Time</td>
-                                <td>: {start_time_hours} - {end_time_hours} ({tz_name}'s Time)</td>
+                                <td>: {start_time_hours} - {end_time_hours} ({tz_name})</td>
+                            </tr>
+                             <tr>
+                                <td>Time (UTC)</td>
+                                <td>: {ev.start_date} - {ev.end_date}</td>
                             </tr>
                             <tr>
                                 <td>Duration</td>
@@ -173,43 +181,73 @@ class MeetingEvent(models.Model):
             )
 
     # ==========================
-    # WRITE / EDIT LOGIC (PERBAIKAN DISINI)
+    # OVERRIDE UNLINK (DELETE PERMANEN)
+    # ==========================
+    def unlink(self):
+        """
+        Ensure Zoom meeting is deleted from server upon record deletion.
+        """
+        for rec in self:
+            if rec.zoom_id and rec.virtual_room_id and rec.virtual_room_id.provider == 'zoom':
+                try:
+                    # Pass the current virtual room to ensure credentials are found
+                    rec._logic_delete_zoom_meeting(rec.zoom_id, context_room=rec.virtual_room_id)
+                except Exception as e:
+                    _logger.warning(f"Failed to delete Zoom on Unlink: {str(e)}")
+        return super(MeetingEvent, self).unlink()
+
+    # ==========================
+    # WRITE / EDIT LOGIC (SAFE TRANSACTION + CONTEXT AWARE DELETE)
     # ==========================
     def write(self, vals):
-        # 1. Cek apakah jadwal atau virtual room berubah?
-        # REVISI: Poin 6 - Otomatis Regenerate jika jadwal berubah
         reschedule_fields = ['start_date', 'end_date', 'virtual_room_id']
         is_rescheduling = any(f in vals for f in reschedule_fields)
 
-        # Jika sedang reschedule dan sudah ada Zoom Link sebelumnya, kita harus "Reset" linknya
-        # karena link lama mungkin sudah tidak valid jamnya.
+        # 1. STORE OLD DATA (ID & ROOM) BEFORE WRITE
+        # We need the OLD Virtual Room to get the correct credentials for deletion
+        zoom_data_to_delete = {}
+        
         if is_rescheduling:
+            for rec in self:
+                if rec.zoom_id and rec.virtual_room_id and rec.virtual_room_id.provider == 'zoom':
+                    # Store ID and the Record Object of the Virtual Room
+                    zoom_data_to_delete[rec.id] = {
+                        'id': rec.zoom_id,
+                        'room': rec.virtual_room_id
+                    }
+            
+            # Reset fields in vals to clear UI
             vals['zoom_id'] = False
             vals['zoom_link'] = False
             vals['zoom_start_url'] = False
             vals['zoom_invitation'] = False
-            vals['ai_summary'] = False # Summary lama tidak relevan lagi
+            vals['ai_summary'] = False 
 
-        # Field lain yang memicu update activity
         trigger_fields = ['room_location_ids', 'subject', 'attendee', 'zoom_link']
         is_update_needed = is_rescheduling or any(f in vals for f in trigger_fields)
         
-        # 2. Simpan dulu perubahan datanya ke database
+        # 2. COMMIT TO DB (This might raise Validation Error if clash)
         res = super(MeetingEvent, self).write(vals)
 
-        # 3. Jalankan Logika Sync & Activity SETELAH data tersimpan
+        # 3. IF SUCCESS, DELETE ZOOM USING OLD CREDENTIALS
+        if is_rescheduling:
+            for rec in self:
+                old_data = zoom_data_to_delete.get(rec.id)
+                if old_data:
+                    # Pass the OLD room record to the delete logic
+                    rec._logic_delete_zoom_meeting(old_data['id'], context_room=old_data['room'])
+            
+            for ev in self:
+                if ev.state == 'confirm':
+                    ev.message_post(body="<b>Schedule Changed.</b> Old meeting link has been deleted. Please click 'Generate Meeting Link' again.")
+
+        # 4. Sync Rooms (Updates timestamps, freeing old slots)
         for ev in self:
-            # Sync Booking Ruangan (Meeting Rooms) jika bukan dari context skip
             if not self.env.context.get('skip_rooms_sync'):
                 ev._sync_rooms_from_event()
 
-            # Update Activity Peserta (Hanya kalau status Confirm)
             if ev.state == 'confirm' and is_update_needed:
                 ev._regenerate_all_activities()
-
-            # REVISI: Jika tadi di-reset karena reschedule, beri notifikasi di chatter
-            if is_rescheduling and ev.state == 'confirm':
-                ev.message_post(body="<b>Jadwal/Ruangan Berubah.</b> Link Meeting lama telah dihapus. Silakan klik tombol 'Generate Meeting Link' lagi.")
                         
         return res
 
@@ -218,9 +256,7 @@ class MeetingEvent(models.Model):
     # ==========================
     def action_confirm(self):
         for ev in self:
-            # Sama, pakai fungsi Wipe & Regenerate biar konsisten
             ev._regenerate_all_activities()
-            
             ev.write({'state': 'confirm'})
             ev.with_context(skip_booking_check=True)._sync_rooms_from_event()
         return True
@@ -228,6 +264,44 @@ class MeetingEvent(models.Model):
     # ==========================================================
     # VIRTUAL ROOM ACTIONS & HELPERS
     # ==========================================================
+    
+    def _get_zoom_supported_timezone(self):
+        user_tz = self.env.user.tz or 'Asia/Singapore'
+        mapping = {
+            'Asia/Makassar': 'Asia/Singapore', 
+            'Asia/Ujung_Pandang': 'Asia/Singapore', 
+            'Asia/Jakarta': 'Asia/Bangkok', 
+            'Asia/Pontianak': 'Asia/Bangkok', 
+            'Asia/Jayapura': 'Asia/Tokyo',
+        }
+        return mapping.get(user_tz, user_tz)
+
+    def _logic_delete_zoom_meeting(self, meeting_id, context_room=None):
+        """
+        Deletes meeting from Zoom.
+        Args:
+            meeting_id: Zoom ID to delete
+            context_room: Optional 'virtual.room' record. 
+                          If provided, uses this room's creds. 
+                          If None, uses self.virtual_room_id (current).
+        """
+        try:
+            if not meeting_id.isdigit(): 
+                return 
+            
+            url = f"https://api.zoom.us/v2/meetings/{meeting_id}"
+            # Pass context_room to header generator
+            headers = self._get_zoom_headers(context_room)
+            
+            res = requests.delete(url, headers=headers, timeout=10)
+            if res.status_code == 204:
+                _logger.info(f"Zoom Meeting {meeting_id} deleted successfully.")
+                self.message_post(body=f"Previous Zoom Meeting ({meeting_id}) deleted from server.")
+            else:
+                _logger.warning(f"Failed to delete Zoom {meeting_id}: {res.text}")
+        except Exception as e:
+            _logger.error(f"Error deleting zoom: {e}")
+
     def action_generate_virtual_link(self):
         self.ensure_one()
         if not self.virtual_room_id:
@@ -244,18 +318,23 @@ class MeetingEvent(models.Model):
         else:
             self._logic_generate_manual_link()
 
-    def _get_zoom_credentials(self):
-        self.ensure_one()
-        account_id = self.virtual_room_id.zoom_account_id
-        client_id = self.virtual_room_id.zoom_client_id
-        client_secret = self.virtual_room_id.zoom_client_secret
+    # MODIFIED: Accepts optional context_room
+    def _get_zoom_credentials(self, context_room=None):
+        room = context_room or self.virtual_room_id
+        if not room:
+             raise UserError(_("Virtual Room configuration missing."))
+             
+        account_id = room.zoom_account_id
+        client_id = room.zoom_client_id
+        client_secret = room.zoom_client_secret
 
         if not account_id or not client_id or not client_secret:
-            raise UserError(_("Zoom Credentials (Account/Client/Secret) missing."))    
+            raise UserError(_("Zoom Credentials (Account/Client/Secret) missing for room %s.") % room.name)    
         return account_id, client_id, client_secret
 
-    def _get_zoom_access_token(self):
-        account_id, client_id, client_secret = self._get_zoom_credentials()
+    # MODIFIED: Accepts optional context_room
+    def _get_zoom_access_token(self, context_room=None):
+        account_id, client_id, client_secret = self._get_zoom_credentials(context_room)
         url = f"https://zoom.us/oauth/token?grant_type=account_credentials&account_id={account_id}"
         try:
             response = requests.post(url, auth=HTTPBasicAuth(client_id, client_secret), timeout=30)
@@ -265,8 +344,9 @@ class MeetingEvent(models.Model):
             _logger.error("Zoom Auth Error: %s", e)
             raise UserError(_("Zoom connection failed: %s") % e)
 
-    def _get_zoom_headers(self):
-        token = self._get_zoom_access_token()
+    # MODIFIED: Accepts optional context_room
+    def _get_zoom_headers(self, context_room=None):
+        token = self._get_zoom_access_token(context_room)
         return {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}
 
     def _logic_generate_zoom(self):
@@ -276,18 +356,19 @@ class MeetingEvent(models.Model):
         duration_seconds = (self.end_date - self.start_date).total_seconds()
         duration_minutes = int(duration_seconds / 60)
 
-        loc = self.room_location_ids[0] if self.room_location_ids else False
-        host_tz = loc.tz if loc and loc.tz else 'Asia/Singapore'
+        zoom_tz = self._get_zoom_supported_timezone()
 
         url = "https://api.zoom.us/v2/users/me/meetings"
-        headers = self._get_zoom_headers() 
+        headers = self._get_zoom_headers() # Uses current self.virtual_room_id
+        
+        start_time_utc = self.start_date.strftime('%Y-%m-%dT%H:%M:%SZ')
         
         payload = {
             "topic": self.subject,
             "type": 2, 
-            "start_time": self.start_date.isoformat(),
+            "start_time": start_time_utc,
             "duration": duration_minutes,
-            "timezone": host_tz,
+            "timezone": zoom_tz, 
             "settings": {
                 "host_video": True,
                 "participant_video": True,
@@ -312,15 +393,17 @@ class MeetingEvent(models.Model):
             'zoom_start_url': zoom_response.get('start_url', ''),
         })
 
-        self._generate_invitation_text("Zoom Meeting", join_url, meeting_id, password)
+        self._generate_invitation_text("Zoom Meeting", join_url, meeting_id, password, zoom_tz)
         
-        # REVISI: Poin 5 - Link open in new tab (target="_blank")
-        self.message_post(body=f"Zoom Meeting Created: <a href='{join_url}' target='_blank'>{join_url}</a>")
+        self.message_post(body=f"Zoom Meeting Created ({zoom_tz}): <a href='{join_url}' target='_blank'>{join_url}</a>")
 
     def _logic_generate_google_meet(self):
         static_link = getattr(self.virtual_room_id, 'static_link', False) 
         if not static_link:
             raise UserError(_("No static Google Meet link defined in Virtual Room master."))
+
+        if static_link and not static_link.startswith(('http://', 'https://')):
+            static_link = 'https://' + static_link
 
         self.write({
             'zoom_id': 'Google Meet', 
@@ -329,8 +412,6 @@ class MeetingEvent(models.Model):
         })
         
         self._generate_invitation_text("Google Meet", static_link)
-        
-        # REVISI: Poin 5 - Link open in new tab (target="_blank")
         self.message_post(body=f"Google Meet Link Attached: <a href='{static_link}' target='_blank'>{static_link}</a>")
 
     def _get_teams_token(self):
@@ -339,7 +420,7 @@ class MeetingEvent(models.Model):
         client_secret = self.virtual_room_id.zoom_client_secret
 
         if not tenant_id or not client_id or not client_secret:
-            raise UserError(_("Untuk Teams, mohon isi: Account ID (Tenant), Client ID, dan Secret."))
+            raise UserError(_("For Teams, please fill: Account ID (Tenant), Client ID, and Secret."))
 
         url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
         payload = {
@@ -354,25 +435,25 @@ class MeetingEvent(models.Model):
             res.raise_for_status()
             return res.json().get('access_token')
         except Exception as e:
-             raise UserError(_("Gagal login ke Microsoft Azure: %s") % e)
+             raise UserError(_("Failed to login to Microsoft Azure: %s") % e)
 
     def _logic_generate_teams(self):
         if self.zoom_id:
-            raise UserError(_("Link sudah ada!"))
+            raise UserError(_("Meeting Link already exists!"))
 
         token = self._get_teams_token()
         host_email = self.virtual_room_id.email or self.env.user.email
         if not host_email:
-             raise UserError(_("Butuh Email Host untuk membuat Teams Meeting."))
+             raise UserError(_("Host Email required for Teams Meeting."))
 
         try:
             user_url = f"https://graph.microsoft.com/v1.0/users/{host_email}"
             user_res = requests.get(user_url, headers={'Authorization': 'Bearer ' + token}, timeout=30)
             if user_res.status_code != 200:
-                 raise UserError(_("User dengan email %s tidak ditemukan di Azure AD.") % host_email)
+                 raise UserError(_("User with email %s not found in Azure AD.") % host_email)
             azure_user_id = user_res.json().get('id')
         except Exception as e:
-            raise UserError(_("Gagal mencari user Azure: %s") % e)
+            raise UserError(_("Failed to find Azure user: %s") % e)
 
         create_url = f"https://graph.microsoft.com/v1.0/users/{azure_user_id}/onlineMeetings"
         
@@ -398,22 +479,24 @@ class MeetingEvent(models.Model):
             })
             
             self._generate_invitation_text("Microsoft Teams", join_url)
-            
-            # REVISI: Poin 5 - Link open in new tab (target="_blank")
             self.message_post(body=f"Teams Meeting Created: <a href='{join_url}' target='_blank'>Join Teams</a>")
 
         except Exception as e:
-            raise UserError(_("Gagal membuat meeting Teams: %s") % e)
+            raise UserError(_("Failed to create Teams meeting: %s") % e)
 
     def _logic_generate_manual_link(self):
-        raise UserError(_("Logic provider ini belum diimplementasikan."))
+        raise UserError(_("Provider logic not implemented yet."))
 
-    def _generate_invitation_text(self, provider_name, url, mid=False, pwd=False):
+    def _generate_invitation_text(self, provider_name, url, mid=False, pwd=False, tz_info=False):
         text = (
             f"Topic: {self.subject}\n"
-            f"Time: {self.start_date}\n\n"
-            f"Join {provider_name}\n{url}\n\n"
+            f"Time: {self.start_date} (UTC)\n" # Base UTC
         )
+        if tz_info:
+             text += f"Timezone Reference: {tz_info}\n"
+
+        text += f"\nJoin {provider_name}\n{url}\n\n"
+        
         if mid and mid != 'Google Meet' and mid != 'Microsoft Teams':
             text += f"Meeting ID: {mid}\n"
         if pwd:
@@ -424,7 +507,7 @@ class MeetingEvent(models.Model):
         self.ensure_one()
         provider = getattr(self.virtual_room_id, 'provider', 'zoom')
         if provider != 'zoom':
-            raise UserError(_("AI Summary saat ini hanya tersedia untuk Zoom."))
+            raise UserError(_("AI Summary only available for Zoom."))
 
         if not self.zoom_id:
             raise UserError(_("No Meeting ID found."))
@@ -525,8 +608,8 @@ class MeetingEvent(models.Model):
                 if alarm_id:
                     vals['calendar_alarm'] = alarm_id
 
-                # TAMBAHKAN CONTEXT bypass_security_check=True agar lolos gembok
                 if loc.id in by_loc:
+                    # Update Existing Booking (Shift Time)
                     by_loc[loc.id].with_context(skip_event_sync=True, skip_booking_check=True, bypass_security_check=True).write(vals)
                     keep_ids.append(by_loc[loc.id].id)
                 else:
@@ -538,7 +621,7 @@ class MeetingEvent(models.Model):
                 leftovers.with_context(skip_event_sync=True, skip_booking_check=True, bypass_security_check=True).write({'state': 'cancel'})
 
     # =========================================================
-    # SATPAM (CONSTRAINTS) - [REVISI: HANYA CONFIRM YG DICEK]
+    # CONSTRAINTS (ENGLISH TRANSLATION)
     # =========================================================
     @api.constrains('start_date', 'end_date', 'room_location_ids', 'virtual_room_id', 'attendee', 'state')
     def _check_double_booking(self):
@@ -562,8 +645,8 @@ class MeetingEvent(models.Model):
                 if conflict_loc:
                     clashed_rooms = set(ev.room_location_ids.mapped('name')) & set(conflict_loc.room_location_ids.mapped('name'))
                     raise ValidationError(
-                        f"TABRAKAN LOKASI!\n"
-                        f"Ruangan {', '.join(clashed_rooms)} sudah dipesan untuk meeting '{conflict_loc.subject}'."
+                        f"LOCATION CLASH!\n"
+                        f"Room {', '.join(clashed_rooms)} is already booked for meeting '{conflict_loc.subject}'."
                     )
 
             if ev.virtual_room_id:
@@ -571,8 +654,8 @@ class MeetingEvent(models.Model):
                 conflict_virtual = self.search(domain_virtual, limit=1)
                 if conflict_virtual:
                     raise ValidationError(
-                        f"TABRAKAN VIRTUAL ROOM!\n"
-                        f"Akun Virtual '{ev.virtual_room_id.name}' sedang dipakai untuk meeting '{conflict_virtual.subject}'."
+                        f"VIRTUAL ROOM CLASH!\n"
+                        f"Virtual Account '{ev.virtual_room_id.name}' is already used for meeting '{conflict_virtual.subject}'."
                     )
 
             if ev.attendee:
@@ -582,16 +665,18 @@ class MeetingEvent(models.Model):
                     busy_people = set(ev.attendee.mapped('name')) & set(conflict_user.attendee.mapped('name'))
                     if busy_people:
                         raise ValidationError(
-                            f"TABRAKAN PESERTA!\n"
-                            f"Peserta berikut: {', '.join(busy_people)} "
-                            f"sudah memiliki jadwal meeting lain ('{conflict_user.subject}')."
+                            f"ATTENDEE CLASH!\n"
+                            f"The following people: {', '.join(busy_people)} "
+                            f"already have another meeting ('{conflict_user.subject}')."
                         )
 
+    # ==========================
+    # ICS / CALENDAR GENERATION
+    # ==========================
     def create_calendar_web(self):
         self.ensure_one()
         rec = self
         
-        # 1. Setup Data Waktu & Tempat
         loc = rec.room_location_ids[0] if rec.room_location_ids else False
         tz_name = loc.tz if loc and loc.tz else "Asia/Singapore"
         loc_name = ", ".join(rec.room_location_ids.mapped('name'))
@@ -608,78 +693,74 @@ class MeetingEvent(models.Model):
         start_time_hours = start_time.strftime('%H:%M')
         end_time_hours = end_time.strftime('%H:%M')
         
-        duration = end_time - start_time
-        meeting_hours, remainder = divmod(duration.total_seconds(), 3600)
-        meeting_minutes, meeting_seconds = divmod(remainder, 60)
-        meeting_hours_str = f"{int(meeting_hours)} hours " if meeting_hours > 0 else ""
-        meeting_minutes_str = f"{int(meeting_minutes)} minutes" if meeting_minutes > 0 else ""
-
-        reminder = int(rec.calendar_alarm.duration) if rec.calendar_alarm and rec.calendar_alarm.duration else 15
-        
-        # 2. Build Attendee String untuk ICS
-        attendee_str = ''
-        for user in rec.attendee:
-            if user.email:
-                attendee_str += f'ATTENDEE;ROLE=REQ-PARTICIPANT;RSVP=TRUE;CN="{user.display_name}":mailto:{user.email}\n'
-        
-        # Tambahkan Guest ke ICS juga (opsional, biar rapi)
-        if rec.guest_partner_id and rec.guest_partner_id.email:
-             attendee_str += f'ATTENDEE;ROLE=REQ-PARTICIPANT;RSVP=TRUE;CN="{rec.guest_partner_id.name}":mailto:{rec.guest_partner_id.email}\n'
-
         timezone_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset().total_seconds() / 60
         off_h = int(timezone_offset // 60)
         off_m = int(abs(timezone_offset) % 60)
         tz_offset_str = f"{'+' if off_h >= 0 else '-'}{abs(off_h):02d}{abs(off_m):02d}"
 
-        display_location = loc_name
-        description_text = rec.description or ''
+        raw_desc = rec.description or ''
+        description_text = raw_desc.replace('\n', '\\n')
         
+        display_location = loc_name
         if rec.zoom_link:
             display_location += " (Online Meeting Available)"
-            description_text += f"\n\nJoin Link: {rec.zoom_link}"
+            description_text += f"\\n\\nJoin Link: {rec.zoom_link}"
             if rec.zoom_id and rec.zoom_id != 'Google Meet' and rec.zoom_id != 'Microsoft Teams':
-                description_text += f"\nMeeting ID: {rec.zoom_id}"
+                description_text += f"\\nMeeting ID: {rec.zoom_id}"
         elif rec.virtual_room_id:
             display_location += f" (Virtual: {rec.virtual_room_id.name})"
 
-        # 3. Generate ICS Content
-        icsContent = f"""BEGIN:VCALENDAR
-VERSION:2.0
-PRODID:-//Odoo Meeting Rooms//EN
-CALSCALE:GREGORIAN
-METHOD:REQUEST
-BEGIN:VTIMEZONE
-TZID:{tz_name}
-X-LIC-LOCATION:{tz_name}
-BEGIN:STANDARD
-DTSTART:19700101T000000
-TZOFFSETFROM:{tz_offset_str}
-TZOFFSETTO:{tz_offset_str}
-TZNAME:{tz_name}
-END:STANDARD
-END:VTIMEZONE
-BEGIN:VEVENT
-UID:meeting_event_{rec.id}
-SEQUENCE:{rec.version}
-SUMMARY:{rec.subject}
-DTSTAMP:{create_time.strftime('%Y%m%dT%H%M%S')}
-DTSTART;TZID={tz_name}:{start_time.strftime('%Y%m%dT%H%M%S')}
-DTEND;TZID={tz_name}:{end_time.strftime('%Y%m%dT%H%M%S')}
-LOCATION:{display_location}
-DESCRIPTION:{description_text}
-ORGANIZER;PARTSTAT=ACCEPTED;CN="{rec.create_uid.display_name}":mailto:{rec.create_uid.email}
-{attendee_str}BEGIN:VALARM
-TRIGGER:-PT{reminder}M
-ACTION:DISPLAY
-DESCRIPTION:Reminder
-END:VALARM
-END:VEVENT
-END:VCALENDAR"""
-
-        filename = f"{rec.subject}.ics"
-        encoded_ics = base64.b64encode(icsContent.encode('utf-8'))
+        lines = []
+        lines.append("BEGIN:VCALENDAR")
+        lines.append("VERSION:2.0")
+        lines.append("PRODID:-//Odoo Meeting Rooms//EN")
+        lines.append("CALSCALE:GREGORIAN")
+        lines.append("METHOD:REQUEST")
         
-        # Buat/Update Attachment
+        lines.append("BEGIN:VTIMEZONE")
+        lines.append(f"TZID:{tz_name}")
+        lines.append(f"X-LIC-LOCATION:{tz_name}")
+        lines.append("BEGIN:STANDARD")
+        lines.append("DTSTART:19700101T000000")
+        lines.append(f"TZOFFSETFROM:{tz_offset_str}")
+        lines.append(f"TZOFFSETTO:{tz_offset_str}")
+        lines.append(f"TZNAME:{tz_name}")
+        lines.append("END:STANDARD")
+        lines.append("END:VTIMEZONE")
+        
+        lines.append("BEGIN:VEVENT")
+        lines.append(f"UID:meeting_event_{rec.id}")
+        lines.append(f"SEQUENCE:{rec.version}")
+        lines.append(f"SUMMARY:{rec.subject}")
+        lines.append(f"DTSTAMP:{create_time.strftime('%Y%m%dT%H%M%S')}")
+        lines.append(f"DTSTART;TZID={tz_name}:{start_time.strftime('%Y%m%dT%H%M%S')}")
+        lines.append(f"DTEND;TZID={tz_name}:{end_time.strftime('%Y%m%dT%H%M%S')}")
+        lines.append(f"LOCATION:{display_location}")
+        lines.append(f"DESCRIPTION:{description_text}")
+        lines.append(f'ORGANIZER;PARTSTAT=ACCEPTED;CN="{rec.create_uid.display_name}":mailto:{rec.create_uid.email}')
+        
+        for user in rec.attendee:
+            if user.email:
+                lines.append(f'ATTENDEE;ROLE=REQ-PARTICIPANT;RSVP=TRUE;CN="{user.display_name}":mailto:{user.email}')
+        
+        if rec.guest_partner_id and rec.guest_partner_id.email:
+             lines.append(f'ATTENDEE;ROLE=REQ-PARTICIPANT;RSVP=TRUE;CN="{rec.guest_partner_id.name}":mailto:{rec.guest_partner_id.email}')
+
+        reminder = int(rec.calendar_alarm.duration) if rec.calendar_alarm and rec.calendar_alarm.duration else 15
+        lines.append("BEGIN:VALARM")
+        lines.append(f"TRIGGER:-PT{reminder}M")
+        lines.append("ACTION:DISPLAY")
+        lines.append("DESCRIPTION:Reminder")
+        lines.append("END:VALARM")
+        
+        lines.append("END:VEVENT")
+        lines.append("END:VCALENDAR")
+
+        ics_content = "\r\n".join(lines)
+        
+        filename = f"{rec.subject}.ics"
+        encoded_ics = base64.b64encode(ics_content.encode('utf-8'))
+        
         Attachment = self.env['ir.attachment'].sudo()
         existing_att = Attachment.search([
             ('res_model', '=', 'meeting.event'),
@@ -699,24 +780,16 @@ END:VCALENDAR"""
             'public': True
         })
 
-        # ========================================================
-        # [NEW LOGIC] MENGUMPULKAN PENERIMA EMAIL (DISINI POSISINYA)
-        # ========================================================
-        recipients = [rec.create_uid.email] # 1. Host (Pasti dapat)
-        
-        # 2. Dari Attendee (Internal User / Karyawan)
+        recipients = [rec.create_uid.email] 
         for user in rec.attendee:
             if user.email:
                 recipients.append(user.email)
         
-        # 3. Dari Field Guest (Tamu Eksternal) --> INI BAGIAN BARUNYA
         if rec.guest_partner_id and rec.guest_partner_id.email:
             recipients.append(rec.guest_partner_id.email)
 
-        # Bersihkan duplikat & email kosong
         recipients_email = ",".join(filter(None, list(set(recipients))))
 
-        # 4. Kirim Email (Hanya jika ada penerima)
         virtual_room_info = ""
         if rec.zoom_link:
              virtual_room_info = f"<br/><br/><b>Online Meeting:</b> <a href='{rec.zoom_link}' target='_blank'>Click to Join</a>"
@@ -750,7 +823,6 @@ END:VCALENDAR"""
             mail = self.env['mail.mail'].sudo().create(mail_values)
             mail.send()
             
-            # Catat log
             rec.message_post(body=f"Email Invitation sent to: {recipients_email}")
 
         return {
@@ -759,29 +831,42 @@ END:VCALENDAR"""
             'target': 'self',
         }
 
+    # ==========================
+    # ACTION CANCEL (DELETE ZOOM & RESET FIELDS)
+    # ==========================
     def action_cancel(self):
         MeetingRooms = self.env['meeting.rooms']
         for ev in self:
-            # 1. Custom Log Message
-            loc_name = ", ".join(ev.room_location_ids.mapped('name'))
+            # 1. Delete Zoom (Use helper with current context room)
+            if ev.zoom_id and ev.virtual_room_id and ev.virtual_room_id.provider == 'zoom':
+                ev._logic_delete_zoom_meeting(ev.zoom_id, context_room=ev.virtual_room_id)
+
+            # 2. Custom Log
+            loc_name = ", ".join(ev.room_location_ids.mapped('name')) or "Virtual"
             msg_body = f"Meeting <b>{ev.subject}</b> from {ev.start_date} to {ev.end_date} in <b>{loc_name}</b> Is Cancelled"
             ev.message_post(body=msg_body)
 
-            # 2. Hapus Activity Peserta agar tidak ada hutang task (Wipe)
+            # 3. Wipe Activities
             existing_activities = self.env['mail.activity'].search([
                 ('res_id', '=', ev.id),
                 ('res_model', '=', 'meeting.event')
             ])
             existing_activities.unlink()
 
-            # 3. Logika Cancel Anak-anaknya
+            # 4. Cancel Child Rooms
             rooms = MeetingRooms.search([('meeting_event_id', '=', ev.id)])
             if rooms:
-                # TAMBAHKAN bypass_security_check=True
                 rooms.with_context(skip_event_sync=True, skip_booking_check=True, bypass_security_check=True).write({'state': 'cancel'})
             
-            # 4. Cancel Diri Sendiri
-            ev.write({'state': 'cancel'})
+            # 5. Cancel Self & Reset
+            ev.write({
+                'state': 'cancel',
+                'zoom_id': False,
+                'zoom_link': False,
+                'zoom_start_url': False,
+                'zoom_invitation': False,
+                'ai_summary': False
+            })
         return True
 
     def action_draft(self):
@@ -789,7 +874,6 @@ END:VCALENDAR"""
         for ev in self:
             rooms = MeetingRooms.search([('meeting_event_id', '=', ev.id)])
             if rooms:
-                # TAMBAHKAN bypass_security_check=True
                 rooms.with_context(skip_event_sync=True, skip_booking_check=True, bypass_security_check=True).write({'state': 'draft'})
             ev.write({'state': 'draft'})
         return True
@@ -799,24 +883,41 @@ END:VCALENDAR"""
     # ==========================
     @api.model
     def _cron_auto_delete_activities(self):
-        # Hapus activity basi milik Meeting EVENT (Bapaknya)
         activities_event = self.env['mail.activity'].search([
             ('res_model', '=', 'meeting.event'),
             ('date_deadline', '<', fields.Date.today())
         ])
 
-        # Hapus activity basi milik Meeting ROOMS (Anaknya)
         activities_rooms = self.env['mail.activity'].search([
             ('res_model', '=', 'meeting.rooms'),
             ('date_deadline', '<', fields.Date.today())
         ])
 
-        # Gabungkan hasil tangkapan
         all_activities = activities_event + activities_rooms
         count = len(all_activities)
 
         if count > 0:
             all_activities.unlink()
-            _logger.info(f"CRON JOB: SUKSES MENGHAPUS {count} Schedule Activity Basi (Gabungan Event & Rooms).")
+            _logger.info(f"CRON JOB: SUCCESSFULLY DELETED {count} Stale Activities.")
         else:
-            _logger.info("CRON JOB: Tidak ditemukan activity basi (kurang dari hari ini).")
+            _logger.info("CRON JOB: No stale activities found.")
+
+    # ==========================
+    # SMART BUTTON ACTION
+    # ==========================
+    def open_zoom_link(self):
+        self.ensure_one()
+        # AUTO FIX MISSING HTTPS
+        if self.zoom_link and not self.zoom_link.startswith(('http://', 'https://')):
+            return {
+                'type': 'ir.actions.act_url',
+                'url': 'https://' + self.zoom_link,
+                'target': 'new',
+            }
+        
+        if self.zoom_link:
+            return {
+                'type': 'ir.actions.act_url',
+                'url': self.zoom_link,
+                'target': 'new',
+            }

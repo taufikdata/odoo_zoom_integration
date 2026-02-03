@@ -8,23 +8,22 @@ import base64
 class BookingPortal(http.Controller):
 
     # =========================================================================
-    # 0. KHUSUS: MENAMPILKAN AVATAR HOST (BYPASS SECURITY)
+    # 0. AVATAR HOST (BYPASS SECURITY)
     # =========================================================================
     @http.route('/book/avatar/<string:token>', type='http', auth='public')
     def booking_avatar(self, token):
-        # 1. Cek Token Valid (Pakai Sudo agar publik bisa akses)
+        # 1. Check Token
         link_obj = request.env['meeting.booking.link'].sudo().search([('token', '=', token)], limit=1)
         
         if not link_obj:
             return request.not_found()
             
-        # 2. Ambil Gambar dari Partner Host
+        # 2. Get Image
         partner = link_obj.user_id.partner_id
         if not partner.image_128:
-            # Jika tidak ada foto, redirect ke placeholder bawaan Odoo
             return request.redirect('/web/static/img/placeholder.png')
             
-        # 3. Decode Gambar & Return sebagai Response HTTP
+        # 3. Decode & Return
         image_data = base64.b64decode(partner.image_128)
         headers = [
             ('Content-Type', 'image/png'), 
@@ -34,7 +33,7 @@ class BookingPortal(http.Controller):
         return request.make_response(image_data, headers)
 
     # =========================================================================
-    # 1. HALAMAN KALENDER (PEMILIHAN SLOT)
+    # 1. CALENDAR PAGE (SLOT SELECTION)
     # =========================================================================
     @http.route('/book/<string:token>', type='http', auth='public', website=True)
     def booking_calendar(self, token, **kw):
@@ -47,27 +46,39 @@ class BookingPortal(http.Controller):
             return request.render('http_routing.404') 
 
         host_user = link_obj.user_id
-        sg_tz = pytz.timezone('Asia/Singapore') 
         
-        now_sg = datetime.now(sg_tz)
+        # REVISION: Use Host Timezone, not hardcoded Singapore
+        host_tz_name = host_user.tz or 'UTC'
+        try:
+            host_tz = pytz.timezone(host_tz_name)
+        except:
+            host_tz = pytz.utc # Fallback
+
+        now_host = datetime.now(host_tz)
         dates = []
         
         MeetingEvent = request.env['meeting.event'].sudo()
 
+        # Generate slots for next 6 days
         for i in range(6): 
-            current_date = now_sg.date() + timedelta(days=i)
+            current_date = now_host.date() + timedelta(days=i)
             day_slots = []
             
+            # Slot: 9 AM to 5 PM (Host Time)
             for hour in range(9, 17): 
-                start_dt_sg = sg_tz.localize(datetime.combine(current_date, time(hour, 0, 0)))
+                start_dt_host = host_tz.localize(datetime.combine(current_date, time(hour, 0, 0)))
                 
-                if start_dt_sg < now_sg:
+                # Skip past time
+                if start_dt_host < now_host:
                     continue
 
-                end_dt_sg = start_dt_sg + timedelta(hours=1)
-                start_dt_utc = start_dt_sg.astimezone(pytz.utc).replace(tzinfo=None)
-                end_dt_utc = end_dt_sg.astimezone(pytz.utc).replace(tzinfo=None)
+                end_dt_host = start_dt_host + timedelta(hours=1)
+                
+                # Convert to UTC for Database Query
+                start_dt_utc = start_dt_host.astimezone(pytz.utc).replace(tzinfo=None)
+                end_dt_utc = end_dt_host.astimezone(pytz.utc).replace(tzinfo=None)
 
+                # Check Availability
                 domain = [
                     ('start_date', '<', end_dt_utc),
                     ('end_date', '>', start_dt_utc),
@@ -92,10 +103,11 @@ class BookingPortal(http.Controller):
             'host': host_user,
             'dates': dates,
             'token': token,
+            'tz_name': host_tz_name, # Pass timezone for UI header
         })
 
     # =========================================================================
-    # 2. HALAMAN FORM DETAILS (KONFIRMASI WAKTU)
+    # 2. DETAILS FORM (CONFIRM TIME)
     # =========================================================================
     @http.route('/booking/details', type='http', auth='public', website=True)
     def booking_details_form(self, token, time_str, **kw):
@@ -108,17 +120,20 @@ class BookingPortal(http.Controller):
             return "Token Invalid or Expired"
         
         host_user = link_obj.user_id
+        host_tz_name = host_user.tz or 'UTC'
         
         try:
+            # Parse UTC time from URL
             dt_utc = datetime.strptime(time_str.strip(), '%Y-%m-%d %H:%M:%S')
             
             utc_zone = pytz.utc
-            sg_zone = pytz.timezone('Asia/Singapore')
+            host_zone = pytz.timezone(host_tz_name)
             
+            # Convert to Host Timezone for Display
             dt_aware_utc = utc_zone.localize(dt_utc)
-            dt_sg = dt_aware_utc.astimezone(sg_zone)
+            dt_host = dt_aware_utc.astimezone(host_zone)
             
-            pretty_time_str = dt_sg.strftime('%A, %d %b %Y - %H:%M (Asia/Singapore)')
+            pretty_time_str = dt_host.strftime(f'%A, %d %b %Y - %H:%M ({host_tz_name})')
             
             return request.render('meeting_rooms.portal_booking_form_template', {
                 'host': host_user,
@@ -132,7 +147,7 @@ class BookingPortal(http.Controller):
             return f"Error parsing schedule: {str(e)}"
 
     # =========================================================================
-    # 3. PROSES SUBMIT (DATABASE STORAGE)
+    # 3. SUBMIT (CREATE EVENT)
     # =========================================================================
     @http.route('/booking/submit', type='http', auth='public', website=True, csrf=True)
     def booking_submit(self, token, time_str, **kw):
@@ -154,17 +169,20 @@ class BookingPortal(http.Controller):
             start_dt = datetime.strptime(time_str.strip(), '%Y-%m-%d %H:%M:%S')
             end_dt = start_dt + timedelta(hours=1) 
         except ValueError:
-            return "Format waktu tidak valid."
+            return "Invalid time format."
 
         host_user = booking_link.user_id
 
+        # Handle Guest Partner
         Partner = request.env['res.partner'].sudo()
         guest_partner = Partner.search([('email', '=', email)], limit=1)
         if not guest_partner:
             guest_partner = Partner.create({'name': name, 'email': email, 'type': 'contact'})
         else:
+            # Update name if existing
             guest_partner.write({'name': name})
 
+        # Double Check Conflict
         domain = [
             ('start_date', '<', end_dt),
             ('end_date', '>', start_dt),
@@ -173,8 +191,9 @@ class BookingPortal(http.Controller):
         ]
         conflict = request.env['meeting.event'].sudo().search(domain, limit=1)
         if conflict:
-             return "Maaf, slot waktu ini baru saja dipesan oleh orang lain."
+             return "Sorry, this time slot has just been booked by someone else."
 
+        # Create Event
         new_event = request.env['meeting.event'].sudo().create({
             'subject': final_subject,
             'start_date': start_dt,
@@ -184,6 +203,7 @@ class BookingPortal(http.Controller):
             'guest_partner_id': guest_partner.id,
         })
 
+        # Trigger Optional Invite Logic
         try:
             if hasattr(new_event, 'action_send_invite_to_guest'):
                 new_event.action_send_invite_to_guest(email)

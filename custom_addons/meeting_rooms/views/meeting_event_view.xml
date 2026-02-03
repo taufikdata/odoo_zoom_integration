@@ -69,19 +69,35 @@
                             states="confirm" 
                             string="Cancel" 
                             class="btn-secondary"
-                            confirm="PERINGATAN: Apakah Anda yakin ingin membatalkan Event ini? Tindakan ini akan otomatis membatalkan SEMUA Meeting Room yang terhubung."/>
+                            confirm="WARNING: Are you sure you want to cancel this Event? This action will automatically cancel ALL connected Meeting Rooms."/>
 
                     <button name="action_draft" 
                             type="object" 
                             states="cancel" 
                             string="Set To Draft" 
                             class="btn-secondary"
-                            confirm="PERINGATAN: Mengubah Event menjadi Draft akan mengubah status SEMUA Meeting Room menjadi Draft juga. Lanjutkan?"/>
+                            confirm="WARNING: Setting Event to Draft will also set ALL Meeting Rooms to Draft. Continue?"/>
                             
                     <field name="state" widget="statusbar" statusbar_visible="draft,confirm,cancel"/>
                 </header>
 
                 <sheet>
+                    <div class="oe_button_box" name="button_box">
+                        <button name="%(meeting_rooms.action_meeting_booking_link)d" 
+                                type="action" 
+                                class="oe_stat_button" 
+                                icon="fa-link" 
+                                string="Booking Links">
+                        </button>
+                        
+                        <button name="open_zoom_link"
+                                type="object"
+                                class="oe_stat_button"
+                                icon="fa-video-camera"
+                                string="Join Meeting"
+                                attrs="{'invisible': [('zoom_link', '=', False)]}">
+                        </button>
+                    </div>
                     <group>
                         <group>
                             <field name="subject" required="1"/>
@@ -104,6 +120,14 @@
                         <group>
                             <field name="start_date"/>
                             <field name="end_date"/>
+
+                            <label for="start_date_utc_str" string="Time in UTC"/>
+                            <div class="o_row">
+                                <field name="start_date_utc_str" readonly="1" class="oe_inline"/>
+                                <span> - </span>
+                                <field name="end_date_utc_str" readonly="1" class="oe_inline"/>
+                            </div>
+
                             <field name="attendee"
                                    options="{'no_create_edit': True,'no_create': True}"
                                    widget="many2many_tags"

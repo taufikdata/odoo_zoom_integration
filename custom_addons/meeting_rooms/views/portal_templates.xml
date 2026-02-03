@@ -31,7 +31,8 @@
                             <p class="text-muted">60 Min Meeting</p>
                         </div>
                         <div class="col-md-8 p-5">
-                            <h3 class="font-weight-bold mb-4">Select Date &amp; Time (Asia/Singapore)</h3>
+                            <h3 class="font-weight-bold mb-4">Select Date &amp; Time (<t t-esc="tz_name"/>)</h3>
+                            
                             <div class="row">
                                 <t t-foreach="dates" t-as="day">
                                     <div class="col-md-4 mb-4">

@@ -75,10 +75,11 @@ class MeetingRooms(models.Model):
         if self.env.context.get('bypass_security_check'):
             return True
             
+        # REVISI: Translate Error Message to English
         raise UserError(_(
-            "AKSES DITOLAK!\n\n"
-            "Anda tidak bisa membuat, mengedit, atau menghapus Booking secara manual di menu ini.\n"
-            "Silakan pergi ke menu 'Meeting Events' untuk mengatur jadwal."
+            "ACCESS DENIED!\n\n"
+            "You cannot create, edit, or delete Bookings manually here.\n"
+            "Please go to 'Meeting Events' menu to manage schedules."
         ))
 
     def send_email_meeting(self):
@@ -273,6 +274,7 @@ END:VCALENDAR`;
         self._check_readonly_access()
         is_manager = self.env.user.has_group('meeting_rooms.group_meeting_manager')
         if self.create_uid != self.env.user and not is_manager:
+            # REVISI: Translate Error
             raise AccessDenied(f"Only Initiator ({self.create_uid.name}) Or Meeting Administrator can delete")
         return super(MeetingRooms, self).unlink()
 
@@ -294,18 +296,19 @@ END:VCALENDAR`;
                 start_time = rec.start_date + timedelta(hours=offset_hours)
                 end_time = rec.end_date + timedelta(hours=offset_hours)
                 
+                # REVISI: Translate Error Message
                 if self.start_date > rec.start_date and self.end_date < rec.end_date and self.room_location == rec.room_location :
-                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time},  in {rec.room_location.name} Please Choose Another Schedule")
+                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time} in {rec.room_location.name}. Please Choose Another Schedule")
                 elif self.start_date > rec.start_date and self.start_date < rec.end_date and self.room_location == rec.room_location:
-                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time},in {rec.room_location.name} Please Choose Another Schedule")
+                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time} in {rec.room_location.name}. Please Choose Another Schedule")
                 elif self.end_date > rec.start_date and self.end_date < rec.end_date and self.room_location == rec.room_location :
-                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time},in {rec.room_location.name} Please Choose Another Schedule")
+                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time} in {rec.room_location.name}. Please Choose Another Schedule")
                 elif self.start_date < rec.start_date and self.end_date > rec.end_date and self.room_location == rec.room_location :
-                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time},in {rec.room_location.name} Please Choose Another Schedule")
+                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time} in {rec.room_location.name}. Please Choose Another Schedule")
                 elif self.start_date == rec.start_date and self.end_date > rec.end_date and self.room_location == rec.room_location :
-                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time},in {rec.room_location.name} Please Choose Another Schedule")
+                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time} in {rec.room_location.name}. Please Choose Another Schedule")
                 elif self.start_date == rec.start_date and self.end_date == rec.end_date and self.room_location == rec.room_location and self.id != rec.id :
-                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time},in {rec.room_location.name} Please Choose Another Schedule")
+                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time} in {rec.room_location.name}. Please Choose Another Schedule")
 
     @api.model
     def create(self, vals):
@@ -390,6 +393,7 @@ END:VCALENDAR`;
         is_manager = self.env.user.has_group('meeting_rooms.group_meeting_manager')
 
         if self.create_uid != self.env.user and not is_manager :
+            # REVISI: Translate Error
             raise AccessDenied(f"Only Initiator ({self.create_uid.name}) Or Meeting Administrator can Edit")
         else :
             return super(MeetingRooms, self).write(vals)
