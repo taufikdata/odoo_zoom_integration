@@ -8,22 +8,22 @@ import base64
 class BookingPortal(http.Controller):
 
     # =========================================================================
-    # 0. AVATAR HOST (BYPASS SECURITY)
+    # 0. Host avatar endpoint (bypass security for public access)
     # =========================================================================
     @http.route('/book/avatar/<string:token>', type='http', auth='public')
     def booking_avatar(self, token):
-        # 1. Check Token
+        # 1. Verify token
         link_obj = request.env['meeting.booking.link'].sudo().search([('token', '=', token)], limit=1)
         
         if not link_obj:
             return request.not_found()
             
-        # 2. Get Image
+        # 2. Get host image
         partner = link_obj.user_id.partner_id
         if not partner.image_128:
             return request.redirect('/web/static/img/placeholder.png')
             
-        # 3. Decode & Return
+        # 3. Decode and return image
         image_data = base64.b64decode(partner.image_128)
         headers = [
             ('Content-Type', 'image/png'), 
@@ -33,7 +33,7 @@ class BookingPortal(http.Controller):
         return request.make_response(image_data, headers)
 
     # =========================================================================
-    # 1. CALENDAR PAGE (SLOT SELECTION)
+    # 1. Calendar page (time slot selection)
     # =========================================================================
     @http.route('/book/<string:token>', type='http', auth='public', website=True)
     def booking_calendar(self, token, **kw):
@@ -47,7 +47,7 @@ class BookingPortal(http.Controller):
 
         host_user = link_obj.user_id
         
-        # REVISION: Use Host Timezone, not hardcoded Singapore
+        # Use host timezone, not hardcoded Singapore
         host_tz_name = host_user.tz or 'UTC'
         try:
             host_tz = pytz.timezone(host_tz_name)
@@ -59,22 +59,22 @@ class BookingPortal(http.Controller):
         
         MeetingEvent = request.env['meeting.event'].sudo()
 
-        # Generate slots for next 6 days
+        # Generate available slots for next 6 days
         for i in range(6): 
             current_date = now_host.date() + timedelta(days=i)
             day_slots = []
             
-            # Slot: 9 AM to 5 PM (Host Time)
+            # Time slots: 9 AM to 5 PM (host's timezone)
             for hour in range(9, 17): 
                 start_dt_host = host_tz.localize(datetime.combine(current_date, time(hour, 0, 0)))
                 
-                # Skip past time
+                # Skip past times
                 if start_dt_host < now_host:
                     continue
 
                 end_dt_host = start_dt_host + timedelta(hours=1)
                 
-                # Convert to UTC for Database Query
+                # Convert to UTC for database query
                 start_dt_utc = start_dt_host.astimezone(pytz.utc).replace(tzinfo=None)
                 end_dt_utc = end_dt_host.astimezone(pytz.utc).replace(tzinfo=None)
 
@@ -107,7 +107,8 @@ class BookingPortal(http.Controller):
         })
 
     # =========================================================================
-    # 2. DETAILS FORM (CONFIRM TIME)
+    # =========================================================================
+    # 2. Details form (confirm time selection)
     # =========================================================================
     @http.route('/booking/details', type='http', auth='public', website=True)
     def booking_details_form(self, token, time_str, **kw):
@@ -123,13 +124,13 @@ class BookingPortal(http.Controller):
         host_tz_name = host_user.tz or 'UTC'
         
         try:
-            # Parse UTC time from URL
+            # Parse UTC time from URL parameter
             dt_utc = datetime.strptime(time_str.strip(), '%Y-%m-%d %H:%M:%S')
             
             utc_zone = pytz.utc
             host_zone = pytz.timezone(host_tz_name)
             
-            # Convert to Host Timezone for Display
+            # Convert to host timezone for display
             dt_aware_utc = utc_zone.localize(dt_utc)
             dt_host = dt_aware_utc.astimezone(host_zone)
             
@@ -147,7 +148,7 @@ class BookingPortal(http.Controller):
             return f"Error parsing schedule: {str(e)}"
 
     # =========================================================================
-    # 3. SUBMIT (CREATE EVENT)
+    # 3. Submit booking (create meeting event)
     # =========================================================================
     @http.route('/booking/submit', type='http', auth='public', website=True, csrf=True)
     def booking_submit(self, token, time_str, **kw):
@@ -173,16 +174,16 @@ class BookingPortal(http.Controller):
 
         host_user = booking_link.user_id
 
-        # Handle Guest Partner
+        # Create or update guest partner record
         Partner = request.env['res.partner'].sudo()
         guest_partner = Partner.search([('email', '=', email)], limit=1)
         if not guest_partner:
             guest_partner = Partner.create({'name': name, 'email': email, 'type': 'contact'})
         else:
-            # Update name if existing
+            # Update name if partner already exists
             guest_partner.write({'name': name})
 
-        # Double Check Conflict
+        # Verify no time slot conflict
         domain = [
             ('start_date', '<', end_dt),
             ('end_date', '>', start_dt),
@@ -193,7 +194,7 @@ class BookingPortal(http.Controller):
         if conflict:
              return "Sorry, this time slot has just been booked by someone else."
 
-        # Create Event
+        # Create meeting event
         new_event = request.env['meeting.event'].sudo().create({
             'subject': final_subject,
             'start_date': start_dt,

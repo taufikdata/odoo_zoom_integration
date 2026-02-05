@@ -1,6 +1,6 @@
 from odoo import fields, models, api, _
 from datetime import datetime, timedelta, date
-from odoo.exceptions import AccessDenied, UserError
+from odoo.exceptions import AccessDenied, UserError, ValidationError
 import pytz
 import subprocess
 import base64
@@ -69,13 +69,18 @@ class MeetingRooms(models.Model):
     virtual_room_id = fields.Many2one('virtual.room', string="Virtual Room")
 
     # =========================================================================
-    # FUNGSI SECURITY (GEMBOK)
+    # Security functions (access control)
     # =========================================================================
     def _check_readonly_access(self):
-        if self.env.context.get('bypass_security_check'):
+        """
+        Check if user has permission to create/edit/delete meeting rooms.
+        Meeting rooms are auto-created from meeting.event, so direct edit is blocked.
+        Internal system operations can bypass this check using 'skip_readonly_check' context.
+        """
+        if self.env.context.get('skip_readonly_check'):
             return True
             
-        # REVISI: Translate Error Message to English
+        # English error message
         raise UserError(_(
             "ACCESS DENIED!\n\n"
             "You cannot create, edit, or delete Bookings manually here.\n"
@@ -244,9 +249,21 @@ END:VCALENDAR`;
     def action_confirm(self):
         for rec in self:
             rec.state = 'confirm'
-            # SUDAH BERSIH DARI ACTIVITY
+            # Activity notifications centralized in meeting.event model
 
     def action_cancel(self):
+        """Cancel meeting room booking with security check."""
+        # === SECURITY CHECK FIRST ===
+        is_manager = self.env.user.has_group('meeting_rooms.group_meeting_manager')
+        for rec in self:
+            if rec.create_uid != self.env.user and not is_manager:
+                raise UserError(_(
+                    f"ACCESS DENIED!\n\n"
+                    f"You cannot cancel this booking.\n"
+                    f"Only the creator ({rec.create_uid.name}) or a Meeting Administrator can cancel bookings."
+                ))
+        # ================================
+        
         tz = pytz.timezone(self.room_location.tz or "Asia/Singapore")
         current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
         offset_hours = current_offset.total_seconds() / 3600
@@ -274,41 +291,51 @@ END:VCALENDAR`;
         self._check_readonly_access()
         is_manager = self.env.user.has_group('meeting_rooms.group_meeting_manager')
         if self.create_uid != self.env.user and not is_manager:
-            # REVISI: Translate Error
-            raise AccessDenied(f"Only Initiator ({self.create_uid.name}) Or Meeting Administrator can delete")
+            raise UserError(_(f"Only the creator ({self.create_uid.name}) or a Meeting Administrator can delete this record."))
         return super(MeetingRooms, self).unlink()
 
     @api.constrains('start_date', 'end_date', 'room_location')
     def _check_booking_validity(self):
+        """
+        Validate meeting room availability to prevent double bookings.
+        Checks for time overlaps within the same room location.
+        Optimized: Uses domain-based search instead of O(n²) loop.
+        """
         if self.env.context.get('skip_double_booking_check'):
             return
 
-        tz = pytz.timezone(self.room_location.tz or "Asia/Singapore")
-        current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
-        offset_hours = current_offset.total_seconds() / 3600
         for record in self:
+            # Validate end_date > start_date
             if record.end_date <= record.start_date:
-                raise AccessDenied(_("End Date cannot be in the past"))
-            records = self.search([])
-            for rec in records :
-                if rec.id == record.id:
-                    continue
-                start_time = rec.start_date + timedelta(hours=offset_hours)
-                end_time = rec.end_date + timedelta(hours=offset_hours)
+                raise ValidationError(_("End date cannot be before or equal to start date."))
+            
+            # OPTIMIZED: Only search for conflicting bookings in same room
+            # (not ALL records like before)
+            domain = [
+                ('id', '!=', record.id),  # Exclude self
+                ('room_location', '=', record.room_location.id),  # Same room ONLY
+                ('start_date', '<', record.end_date),  # Time overlap check
+                ('end_date', '>', record.start_date),
+                ('state', '=', 'confirm'),  # Only confirmed bookings
+            ]
+            
+            conflicts = self.search(domain)  # Get only relevant records (not ALL!)
+            
+            if conflicts:
+                # Get first conflict for error message
+                conflict = conflicts[0]
+                tz = pytz.timezone(record.room_location.tz or "Asia/Singapore")
+                current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
+                offset_hours = current_offset.total_seconds() / 3600
                 
-                # REVISI: Translate Error Message
-                if self.start_date > rec.start_date and self.end_date < rec.end_date and self.room_location == rec.room_location :
-                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time} in {rec.room_location.name}. Please Choose Another Schedule")
-                elif self.start_date > rec.start_date and self.start_date < rec.end_date and self.room_location == rec.room_location:
-                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time} in {rec.room_location.name}. Please Choose Another Schedule")
-                elif self.end_date > rec.start_date and self.end_date < rec.end_date and self.room_location == rec.room_location :
-                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time} in {rec.room_location.name}. Please Choose Another Schedule")
-                elif self.start_date < rec.start_date and self.end_date > rec.end_date and self.room_location == rec.room_location :
-                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time} in {rec.room_location.name}. Please Choose Another Schedule")
-                elif self.start_date == rec.start_date and self.end_date > rec.end_date and self.room_location == rec.room_location :
-                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time} in {rec.room_location.name}. Please Choose Another Schedule")
-                elif self.start_date == rec.start_date and self.end_date == rec.end_date and self.room_location == rec.room_location and self.id != rec.id :
-                    raise AccessDenied(f"Meeting Room Already Used from {start_time} to {end_time} in {rec.room_location.name}. Please Choose Another Schedule")
+                start_time = conflict.start_date + timedelta(hours=offset_hours)
+                end_time = conflict.end_date + timedelta(hours=offset_hours)
+                
+                raise ValidationError(
+                    _(f"Room conflict: '{record.room_location.name}' is already booked "
+                      f"from {start_time.strftime('%Y-%m-%d %H:%M')} to {end_time.strftime('%Y-%m-%d %H:%M')}. "
+                      f"Please choose another time slot.")
+                )
 
     @api.model
     def create(self, vals):
@@ -316,9 +343,8 @@ END:VCALENDAR`;
 
         vals['name'] = vals['subject']
         values = super(MeetingRooms, self).create(vals)
-        
-        # REVISI PENTING: KODE ACTIVITY SCHEDULE DI SINI SUDAH SAYA HAPUS.
-        # SEKARANG CREATE MURNI HANYA MEMBUAT DATA TANPA NOTIFIKASI SPAM.
+        # Activity notifications are centralized in meeting.event model
+        # to prevent duplicate notifications (one from meeting.event, one from meeting.rooms).
 
         if not self.env.context.get('skip_double_booking_check'):
             tz = pytz.timezone(values.room_location.tz or "Asia/Singapore")
@@ -361,7 +387,7 @@ END:VCALENDAR`;
                         'attendee' : values.attendee,
                         'room_location' : values.room_location.id
                     }
-                    meeting = self.env['meeting.rooms'].sudo().with_context(bypass_security_check=True).create(value)
+                    meeting = self.env['meeting.rooms'].sudo().with_context(skip_readonly_check=True).create(value)
 
             elif values.rrule_type == "weekly":
                 delta = timedelta(days=7)
@@ -382,18 +408,18 @@ END:VCALENDAR`;
                         'attendee': values.attendee,
                         'room_location': values.room_location.id
                     }
-                    meeting = self.env['meeting.rooms'].sudo().with_context(bypass_security_check=True).create(value)
+                    meeting = self.env['meeting.rooms'].sudo().with_context(skip_readonly_check=True).create(value)
         return values
 
-    def write(self,vals):
+    def write(self, vals):
+        """Override write to enforce readonly access control."""
         self._check_readonly_access()
         if self.env.context.get('force_sync'):
             return super(MeetingRooms, self).write(vals)
 
         is_manager = self.env.user.has_group('meeting_rooms.group_meeting_manager')
 
-        if self.create_uid != self.env.user and not is_manager :
-            # REVISI: Translate Error
-            raise AccessDenied(f"Only Initiator ({self.create_uid.name}) Or Meeting Administrator can Edit")
-        else :
+        if self.create_uid != self.env.user and not is_manager:
+            raise UserError(_(f"Only the creator ({self.create_uid.name}) or a Meeting Administrator can edit this record."))
+        else:
             return super(MeetingRooms, self).write(vals)

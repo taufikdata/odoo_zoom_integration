@@ -12,7 +12,7 @@ import json
 
 _logger = logging.getLogger(__name__)
 
-# Helper untuk Timezone
+# Helper for timezone
 _tzs = [(tz, tz) for tz in sorted(pytz.all_timezones, key=lambda tz: tz if not tz.startswith('Etc/') else '_')]
 def _tz_get(self):
     return _tzs
@@ -31,6 +31,11 @@ class MeetingEvent(models.Model):
 
     @api.depends('start_date', 'end_date')
     def _compute_utc_display(self):
+        """
+        Compute user-friendly UTC display strings for meeting start and end times.
+        
+        This provides explicit UTC timestamps for users to avoid timezone confusion.
+        """
         for rec in self:
             if rec.start_date:
                 rec.start_date_utc_str = rec.start_date.strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -47,6 +52,25 @@ class MeetingEvent(models.Model):
     # ==========================================================
     @api.model
     def create(self, vals):
+        """
+        Create a new meeting event with validation and auto-add creator as attendee.
+        
+        Args:
+            vals: Dictionary of field values for the new record
+            
+        Returns:
+            New meeting.event record
+            
+        Raises:
+            ValidationError: If end_date <= start_date
+        """
+        # POIN 6: Validate date range before creation
+        if vals.get('start_date') and vals.get('end_date'):
+            start_date = fields.Datetime.to_datetime(vals['start_date'])
+            end_date = fields.Datetime.to_datetime(vals['end_date'])
+            if end_date <= start_date:
+                raise ValidationError(_("End date must be after start date."))
+        
         res = super(MeetingEvent, self).create(vals)
         if res.create_uid.id not in res.attendee.ids:
             res.write({
@@ -67,11 +91,13 @@ class MeetingEvent(models.Model):
     description = fields.Text("Description")
     calendar_alarm = fields.Many2one("calendar.alarm", string="Reminder")
 
+    # === NEW FIELD: TO USER EKSTERNAL ===
     guest_partner_id = fields.Many2one(
         'res.partner', 
         string="External Guest", 
         help="Guest data from booking portal"
     )
+    # ========================================
 
     zoom_id = fields.Char(string="Meeting ID", readonly=True, copy=False) 
     zoom_link = fields.Char(string="Join URL", readonly=True, copy=False)
@@ -102,37 +128,95 @@ class MeetingEvent(models.Model):
     )
 
     # ==========================================================
+    # Helper: Compute local times (eliminate code duplication)
+    # ==========================================================
+    def _compute_local_times(self, tz_name=None):
+        """
+        Convert meeting times to local timezone with proper DST handling.
+        
+        This method consolidates timezone conversion logic used in multiple places.
+        Properly handles DST by converting the meeting datetime itself, not using current offset.
+        
+        Args:
+            tz_name: Timezone name (if None, uses creator timezone)
+        
+        Returns:
+            dict with keys: 'tz', 'tz_name', 'local_start', 'local_end', 
+                           'formatted_date', 'start_time_hours', 'end_time_hours',
+                           'tz_offset_str'
+        """
+        self.ensure_one()
+        
+        if not tz_name:
+            tz_name = self.create_uid.tz or 'UTC'
+        
+        tz = pytz.timezone(tz_name)
+        
+        # ✅ CORRECT: Convert the MEETING datetime to its timezone (handles DST correctly)
+        local_start = self.start_date.astimezone(tz)
+        local_end = self.end_date.astimezone(tz)
+        
+        # Format strings
+        formatted_date = local_start.strftime('%b %d, %Y')
+        start_time_hours = local_start.strftime('%H:%M')
+        end_time_hours = local_end.strftime('%H:%M')
+        
+        # Timezone offset string for ICS
+        utc_offset = local_start.utcoffset()
+        offset_total_seconds = utc_offset.total_seconds()
+        offset_hours = int(offset_total_seconds // 3600)
+        offset_minutes = int(abs(offset_total_seconds) % 3600 // 60)
+        tz_offset_str = f"{'+' if offset_hours >= 0 else '-'}{abs(offset_hours):02d}{abs(offset_minutes):02d}"
+        
+        return {
+            'tz': tz,
+            'tz_name': tz_name,
+            'local_start': local_start,
+            'local_end': local_end,
+            'formatted_date': formatted_date,
+            'start_time_hours': start_time_hours,
+            'end_time_hours': end_time_hours,
+            'tz_offset_str': tz_offset_str,
+        }
+
+    # ==========================================================
     # LOGIC: REGENERATE ACTIVITY
     # ==========================================================
     def _regenerate_all_activities(self):
+        """
+        Regenerate activity notifications for all meeting attendees.
+        
+        This method:
+        1. Deletes all existing activities for this meeting
+        2. Creates new activities for each attendee with formatted meeting details
+        3. Uses creator's timezone for display consistency
+        
+        Context:
+            mail_activity_automation_skip: If True, skip activity generation
+        """
         self.ensure_one()
         ev = self
 
         if self.env.context.get('mail_activity_automation_skip'):
             return
 
+        # 1. WIPE OLD ACTIVITIES
         old_activities = self.env['mail.activity'].search([
             ('res_id', '=', ev.id),
             ('res_model', '=', 'meeting.event')
         ])
         old_activities.unlink()
 
-        loc = ev.room_location_ids[0] if ev.room_location_ids else False
-        tz_name = loc.tz if loc and loc.tz else "Asia/Singapore"
-        loc_name = ", ".join(ev.room_location_ids.mapped('name'))
+        # 2. Use helper for timezone conversion (fix POIN 4 - code duplication)
+        local_times = ev._compute_local_times()
         
-        tz = pytz.timezone(tz_name)
-        current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
-        offset_hours = current_offset.total_seconds() / 3600
-
-        start_time = ev.start_date + timedelta(hours=offset_hours)
-        end_time = ev.end_date + timedelta(hours=offset_hours)
-
-        formatted_start_time = start_time.strftime('%b %d, %Y')
-        start_time_hours = start_time.strftime('%H:%M')
-        end_time_hours = end_time.strftime('%H:%M')
+        loc_name = ", ".join(ev.room_location_ids.mapped('name')) if ev.room_location_ids else "Virtual"
+        formatted_start_time = local_times['formatted_date']
+        start_time_hours = local_times['start_time_hours']
+        end_time_hours = local_times['end_time_hours']
+        tz_name = local_times['tz_name']
         
-        duration = end_time - start_time
+        duration = local_times['local_end'] - local_times['local_start']
         meeting_hours, remainder = divmod(duration.total_seconds(), 3600)
         meeting_minutes, meeting_seconds = divmod(remainder, 60)
         meeting_hours_str = f"{int(meeting_hours)} hours " if meeting_hours > 0 else ""
@@ -144,11 +228,12 @@ class MeetingEvent(models.Model):
         elif ev.virtual_room_id:
             virtual_room_info = f"<br/>(Virtual Room: {ev.virtual_room_id.name})"
 
+        # 3. REGENERATE
         for user in ev.attendee:
             ev.activity_schedule(
                 'meeting_rooms.mail_act_meeting_rooms_approval',
                 user_id=user.id,
-                date_deadline=start_time.date(),
+                date_deadline=local_times['local_start'].date(),
                 note=f"""
                     Hi <b>{user.name}</b>,<br/><br/>
                     I hope this message finds you well. <b>{ev.create_uid.name}</b> has invited you to the "{ev.subject}" meeting<br/><br/>
@@ -181,12 +266,23 @@ class MeetingEvent(models.Model):
             )
 
     # ==========================
-    # OVERRIDE UNLINK (DELETE PERMANEN)
+    # OVERRIDE UNLINK (PERMANENT DELETE)
     # ==========================
     def unlink(self):
         """
-        Ensure Zoom meeting is deleted from server upon record deletion.
+        Ensure that when user deletes an Event from database,
+        the corresponding Zoom meeting is also deleted from Zoom server.
         """
+        # === SECURITY PRE-CHECK ===
+        # Manually check if user has permission to delete.
+        # If not, raise error BEFORE touching Zoom API.
+        is_manager = self.env.user.has_group('meeting_rooms.group_meeting_manager')
+        for rec in self:
+            if rec.create_uid != self.env.user and not is_manager:
+                raise UserError(_("Access Denied: You can only delete your own meetings."))
+        # ==========================================
+
+        # If security check passes, proceed with Zoom deletion
         for rec in self:
             if rec.zoom_id and rec.virtual_room_id and rec.virtual_room_id.provider == 'zoom':
                 try:
@@ -194,24 +290,43 @@ class MeetingEvent(models.Model):
                     rec._logic_delete_zoom_meeting(rec.zoom_id, context_room=rec.virtual_room_id)
                 except Exception as e:
                     _logger.warning(f"Failed to delete Zoom on Unlink: {str(e)}")
+        
+        # Continue deleting record in Odoo (this will also invoke built-in Record Rules as double check)
         return super(MeetingEvent, self).unlink()
 
     # ==========================
-    # WRITE / EDIT LOGIC (SAFE TRANSACTION + CONTEXT AWARE DELETE)
+    # Write / edit logic (transaction-safe)
     # ==========================
     def write(self, vals):
+        """
+        Update meeting event with transaction-safe Zoom meeting management.
+        
+        When rescheduling (changing dates/virtual room):
+        1. Store old Zoom credentials for deletion
+        2. Commit changes to database (may fail if conflict)
+        3. If successful, delete old Zoom meeting using stored credentials
+        4. Regenerate activities if meeting is confirmed
+        
+        Args:
+            vals: Dictionary of field values to update
+            
+        Returns:
+            Result of super().write()
+        
+        Context:
+            skip_rooms_sync: Skip automatic meeting.rooms synchronization
+        """
         reschedule_fields = ['start_date', 'end_date', 'virtual_room_id']
         is_rescheduling = any(f in vals for f in reschedule_fields)
 
-        # 1. STORE OLD DATA (ID & ROOM) BEFORE WRITE
-        # We need the OLD Virtual Room to get the correct credentials for deletion
-        zoom_data_to_delete = {}
+        # 1. Prepare to delete (BUT WAIT)
+        zoom_meetings_to_delete = {}
         
         if is_rescheduling:
             for rec in self:
                 if rec.zoom_id and rec.virtual_room_id and rec.virtual_room_id.provider == 'zoom':
                     # Store ID and the Record Object of the Virtual Room
-                    zoom_data_to_delete[rec.id] = {
+                    zoom_meetings_to_delete[rec.id] = {
                         'id': rec.zoom_id,
                         'room': rec.virtual_room_id
                     }
@@ -231,8 +346,11 @@ class MeetingEvent(models.Model):
 
         # 3. IF SUCCESS, DELETE ZOOM USING OLD CREDENTIALS
         if is_rescheduling:
+            # Invalidate cache to ensure zoom fields are properly cleared
+            self.invalidate_cache(['zoom_id', 'zoom_link', 'zoom_start_url', 'zoom_invitation', 'ai_summary'])
+            
             for rec in self:
-                old_data = zoom_data_to_delete.get(rec.id)
+                old_data = zoom_meetings_to_delete.get(rec.id)
                 if old_data:
                     # Pass the OLD room record to the delete logic
                     rec._logic_delete_zoom_meeting(old_data['id'], context_room=old_data['room'])
@@ -255,6 +373,14 @@ class MeetingEvent(models.Model):
     # ACTION CONFIRM
     # ==========================
     def action_confirm(self):
+        """
+        Confirm meeting event and trigger activities and room synchronization.
+        
+        This action:
+        1. Regenerates activity notifications for all attendees
+        2. Changes state to 'confirm'
+        3. Synchronizes meeting.rooms records
+        """
         for ev in self:
             ev._regenerate_all_activities()
             ev.write({'state': 'confirm'})
@@ -262,11 +388,26 @@ class MeetingEvent(models.Model):
         return True
 
     # ==========================================================
-    # VIRTUAL ROOM ACTIONS & HELPERS
+    # Virtual room actions & helpers
     # ==========================================================
     
-    def _get_zoom_supported_timezone(self):
-        user_tz = self.env.user.tz or 'Asia/Singapore'
+    def _get_zoom_supported_timezone(self, tz_name=None):
+        """
+        Convert user timezone to Zoom-supported timezone.
+        
+        Zoom API doesn't support all pytz timezone names, so we map
+        unsupported Indonesian timezones to their supported equivalents.
+        
+        Args:
+            tz_name: Timezone name to convert (if None, uses creator timezone)
+            
+        Returns:
+            Zoom-compatible timezone string
+        """
+        if not tz_name:
+            tz_name = self.create_uid.tz or 'UTC'
+        
+        # Map unsupported Indonesian timezones to Zoom-supported ones
         mapping = {
             'Asia/Makassar': 'Asia/Singapore', 
             'Asia/Ujung_Pandang': 'Asia/Singapore', 
@@ -274,23 +415,21 @@ class MeetingEvent(models.Model):
             'Asia/Pontianak': 'Asia/Bangkok', 
             'Asia/Jayapura': 'Asia/Tokyo',
         }
-        return mapping.get(user_tz, user_tz)
+        return mapping.get(tz_name, tz_name)
 
     def _logic_delete_zoom_meeting(self, meeting_id, context_room=None):
         """
-        Deletes meeting from Zoom.
+        Delete a Zoom meeting from Zoom server.
+        
         Args:
-            meeting_id: Zoom ID to delete
-            context_room: Optional 'virtual.room' record. 
-                          If provided, uses this room's creds. 
-                          If None, uses self.virtual_room_id (current).
+            meeting_id: Zoom meeting ID (must be numeric string)
+            context_room: virtual.room record with credentials (uses self.virtual_room_id if None)
         """
         try:
             if not meeting_id.isdigit(): 
                 return 
             
             url = f"https://api.zoom.us/v2/meetings/{meeting_id}"
-            # Pass context_room to header generator
             headers = self._get_zoom_headers(context_room)
             
             res = requests.delete(url, headers=headers, timeout=10)
@@ -303,6 +442,12 @@ class MeetingEvent(models.Model):
             _logger.error(f"Error deleting zoom: {e}")
 
     def action_generate_virtual_link(self):
+        """
+        Generate virtual meeting link based on selected provider (Zoom/Teams/Google Meet).
+        
+        Raises:
+            UserError: If no virtual room is selected
+        """
         self.ensure_one()
         if not self.virtual_room_id:
             raise UserError(_("Please select a Virtual Room first."))
@@ -318,8 +463,19 @@ class MeetingEvent(models.Model):
         else:
             self._logic_generate_manual_link()
 
-    # MODIFIED: Accepts optional context_room
     def _get_zoom_credentials(self, context_room=None):
+        """
+        Extract Zoom API credentials from virtual room configuration.
+        
+        Args:
+            context_room: virtual.room record (uses self.virtual_room_id if None)
+            
+        Returns:
+            Tuple of (account_id, client_id, client_secret)
+            
+        Raises:
+            UserError: If credentials are missing
+        """
         room = context_room or self.virtual_room_id
         if not room:
              raise UserError(_("Virtual Room configuration missing."))
@@ -332,8 +488,19 @@ class MeetingEvent(models.Model):
             raise UserError(_("Zoom Credentials (Account/Client/Secret) missing for room %s.") % room.name)    
         return account_id, client_id, client_secret
 
-    # MODIFIED: Accepts optional context_room
     def _get_zoom_access_token(self, context_room=None):
+        """
+        Obtain OAuth access token from Zoom API.
+        
+        Args:
+            context_room: virtual.room record with credentials
+            
+        Returns:
+            Access token string
+            
+        Raises:
+            UserError: If authentication fails
+        """
         account_id, client_id, client_secret = self._get_zoom_credentials(context_room)
         url = f"https://zoom.us/oauth/token?grant_type=account_credentials&account_id={account_id}"
         try:
@@ -344,22 +511,44 @@ class MeetingEvent(models.Model):
             _logger.error("Zoom Auth Error: %s", e)
             raise UserError(_("Zoom connection failed: %s") % e)
 
-    # MODIFIED: Accepts optional context_room
     def _get_zoom_headers(self, context_room=None):
+        """
+        Build HTTP headers with Zoom OAuth token for API requests.
+        
+        Args:
+            context_room: virtual.room record with credentials
+            
+        Returns:
+            Dictionary of HTTP headers
+        """
         token = self._get_zoom_access_token(context_room)
         return {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}
 
     def _logic_generate_zoom(self):
+        """
+        Create a new Zoom meeting via Zoom API.
+        
+        Uses creator's timezone for meeting scheduling (virtual meeting context).
+        Automatically maps unsupported timezones to Zoom-compatible equivalents.
+        
+        Raises:
+            UserError: If meeting link already exists or API call fails
+        """
+        # Refresh record to get latest data from database
+        self.invalidate_cache()
+        
         if self.zoom_id:
-            raise UserError(_("Meeting Link already exists!"))
+            raise UserError(_("Meeting Link already exists! If you want to regenerate, please save the form first to clear the old link."))
 
         duration_seconds = (self.end_date - self.start_date).total_seconds()
         duration_minutes = int(duration_seconds / 60)
 
-        zoom_tz = self._get_zoom_supported_timezone()
+        # Use creator timezone for virtual meeting scheduling
+        tz_name = self.create_uid.tz or 'UTC'
+        zoom_tz = self._get_zoom_supported_timezone(tz_name)
 
         url = "https://api.zoom.us/v2/users/me/meetings"
-        headers = self._get_zoom_headers() # Uses current self.virtual_room_id
+        headers = self._get_zoom_headers() 
         
         start_time_utc = self.start_date.strftime('%Y-%m-%dT%H:%M:%SZ')
         
@@ -398,6 +587,14 @@ class MeetingEvent(models.Model):
         self.message_post(body=f"Zoom Meeting Created ({zoom_tz}): <a href='{join_url}' target='_blank'>{join_url}</a>")
 
     def _logic_generate_google_meet(self):
+        """
+        Attach static Google Meet link from virtual room configuration.
+        
+        Google Meet integration uses pre-configured static links rather than API.
+        
+        Raises:
+            UserError: If static link is not configured
+        """
         static_link = getattr(self.virtual_room_id, 'static_link', False) 
         if not static_link:
             raise UserError(_("No static Google Meet link defined in Virtual Room master."))
@@ -415,6 +612,15 @@ class MeetingEvent(models.Model):
         self.message_post(body=f"Google Meet Link Attached: <a href='{static_link}' target='_blank'>{static_link}</a>")
 
     def _get_teams_token(self):
+        """
+        Obtain OAuth token from Microsoft Azure AD for Teams API access.
+        
+        Returns:
+            Access token string
+            
+        Raises:
+            UserError: If credentials missing or authentication fails
+        """
         tenant_id = self.virtual_room_id.zoom_account_id
         client_id = self.virtual_room_id.zoom_client_id
         client_secret = self.virtual_room_id.zoom_client_secret
@@ -438,8 +644,21 @@ class MeetingEvent(models.Model):
              raise UserError(_("Failed to login to Microsoft Azure: %s") % e)
 
     def _logic_generate_teams(self):
+        """
+        Create a new Microsoft Teams meeting via Microsoft Graph API.
+        
+        Requires:
+        - Azure AD tenant ID, client ID, and client secret in virtual room config
+        - Valid host email address
+        
+        Raises:
+            UserError: If credentials missing, user not found, or API call fails
+        """
+        # Refresh record to get latest data from database
+        self.invalidate_cache()
+        
         if self.zoom_id:
-            raise UserError(_("Meeting Link already exists!"))
+            raise UserError(_("Meeting Link already exists! If you want to regenerate, please save the form first to clear the old link."))
 
         token = self._get_teams_token()
         host_email = self.virtual_room_id.email or self.env.user.email
@@ -488,9 +707,23 @@ class MeetingEvent(models.Model):
         raise UserError(_("Provider logic not implemented yet."))
 
     def _generate_invitation_text(self, provider_name, url, mid=False, pwd=False, tz_info=False):
+        """
+        Generate invitation text for meeting.
+        
+        Args:
+            provider_name: Name of the meeting provider (Zoom/Teams/Google Meet)
+            url: Meeting join URL
+            mid: Meeting ID (optional, provider-specific)
+            pwd: Password (IGNORED for security - not included in invitation)
+            tz_info: Timezone information string (optional)
+            
+        Security Note: 
+            Password parameter is intentionally ignored and never included in invitation text.
+            Users receive passwords through secure provider notification channels only.
+        """
         text = (
             f"Topic: {self.subject}\n"
-            f"Time: {self.start_date} (UTC)\n" # Base UTC
+            f"Time: {self.start_date} (UTC)\n"
         )
         if tz_info:
              text += f"Timezone Reference: {tz_info}\n"
@@ -499,11 +732,19 @@ class MeetingEvent(models.Model):
         
         if mid and mid != 'Google Meet' and mid != 'Microsoft Teams':
             text += f"Meeting ID: {mid}\n"
-        if pwd:
-            text += f"Passcode: {pwd}"
+        # Password is NOT included for security reasons
         self.write({'zoom_invitation': text})
 
     def action_get_ai_summary(self):
+        """
+        Fetch AI-generated meeting summary from Zoom API.
+        
+        Only available for Zoom meetings with AI summary feature enabled.
+        Summary must be generated by Zoom after meeting concludes.
+        
+        Raises:
+            UserError: If provider is not Zoom, no meeting ID, or summary unavailable
+        """
         self.ensure_one()
         provider = getattr(self.virtual_room_id, 'provider', 'zoom')
         if provider != 'zoom':
@@ -521,6 +762,15 @@ class MeetingEvent(models.Model):
         self.write({'ai_summary': divider + new_summary})
 
     def _logic_fetch_formatted_summary(self, mid):
+        """
+        Fetch and format Zoom AI summary with fallback to past meeting UUID.
+        
+        Args:
+            mid: Zoom meeting ID
+            
+        Returns:
+            HTML-formatted summary string or False if not found
+        """
         content = self._try_fetch_summary(mid)
         if not content:
             uuid = self._find_past_meeting_uuid(mid)
@@ -530,6 +780,15 @@ class MeetingEvent(models.Model):
         return content
 
     def _try_fetch_summary(self, mid):
+        """
+        Attempt to fetch Zoom AI summary for a meeting.
+        
+        Args:
+            mid: Zoom meeting ID or UUID
+            
+        Returns:
+            HTML-formatted summary string or False if summary not available
+        """
         url = f"https://api.zoom.us/v2/meetings/{mid}/meeting_summary"
         try:
             res = requests.get(url, headers=self._get_zoom_headers(), timeout=30)
@@ -561,6 +820,17 @@ class MeetingEvent(models.Model):
             return False
 
     def _find_past_meeting_uuid(self, mid):
+        """
+        Find UUID of the most recent past meeting instance.
+        
+        Used for fetching AI summaries which require UUID instead of meeting ID.
+        
+        Args:
+            mid: Zoom meeting ID
+            
+        Returns:
+            Meeting UUID string or False if not found
+        """
         url = f"https://api.zoom.us/v2/past_meetings/{mid}/instances"
         try:
             res = requests.get(url, headers=self._get_zoom_headers(), timeout=30)
@@ -571,6 +841,12 @@ class MeetingEvent(models.Model):
         return False
 
     def _get_alarm_id(self):
+        """
+        Get calendar alarm/reminder ID for this meeting.
+        
+        Returns:
+            Alarm ID if configured, otherwise first available alarm, or False
+        """
         self.ensure_one()
         if self.calendar_alarm:
             return self.calendar_alarm.id
@@ -578,6 +854,21 @@ class MeetingEvent(models.Model):
         return alarm.id if alarm else False
 
     def _sync_rooms_from_event(self):
+        """
+        Synchronize meeting.rooms records to match current event configuration.
+        
+        This method:
+        1. Creates or updates meeting.rooms records for each location
+        2. Cancels meeting.rooms for removed locations
+        3. Preserves existing records when possible
+        
+        Only processes confirmed meetings (state='confirm').
+        
+        Context:
+            skip_event_sync: Prevents infinite recursion
+            skip_booking_check: Bypasses double-booking validation
+            skip_readonly_check: Allows system to modify readonly meeting.rooms
+        """
         MeetingRooms = self.env['meeting.rooms']
         for ev in self:
             if ev.state != 'confirm':
@@ -609,22 +900,35 @@ class MeetingEvent(models.Model):
                     vals['calendar_alarm'] = alarm_id
 
                 if loc.id in by_loc:
-                    # Update Existing Booking (Shift Time)
-                    by_loc[loc.id].with_context(skip_event_sync=True, skip_booking_check=True, bypass_security_check=True).write(vals)
+                    by_loc[loc.id].with_context(skip_event_sync=True, skip_booking_check=True, skip_readonly_check=True).write(vals)
                     keep_ids.append(by_loc[loc.id].id)
                 else:
-                    new_b = MeetingRooms.with_context(skip_event_sync=True, skip_booking_check=True, bypass_security_check=True).create(vals)
+                    new_b = MeetingRooms.with_context(skip_event_sync=True, skip_booking_check=True, skip_readonly_check=True).create(vals)
                     keep_ids.append(new_b.id)
 
             leftovers = existing.filtered(lambda r: r.id not in keep_ids)
             if leftovers:
-                leftovers.with_context(skip_event_sync=True, skip_booking_check=True, bypass_security_check=True).write({'state': 'cancel'})
+                leftovers.with_context(skip_event_sync=True, skip_booking_check=True, skip_readonly_check=True).write({'state': 'cancel'})
 
     # =========================================================
-    # CONSTRAINTS (ENGLISH TRANSLATION)
+    # CONSTRAINTS - TRIPLE VALIDATION
     # =========================================================
     @api.constrains('start_date', 'end_date', 'room_location_ids', 'virtual_room_id', 'attendee', 'state')
     def _check_double_booking(self):
+        """
+        Prevent double booking across three dimensions: locations, virtual rooms, and attendees.
+        
+        Validation applies only to confirmed meetings and checks for time overlaps:
+        1. Physical room location conflicts
+        2. Virtual room account conflicts (one Zoom account can't host multiple meetings)
+        3. Attendee conflicts (people can't be in two meetings simultaneously)
+        
+        Context:
+            skip_double_booking_check: Bypass all validation (use with caution)
+            
+        Raises:
+            ValidationError: If any conflict is detected
+        """
         if self.env.context.get('skip_double_booking_check'):
             return
 
@@ -671,33 +975,41 @@ class MeetingEvent(models.Model):
                         )
 
     # ==========================
-    # ICS / CALENDAR GENERATION
+    # ICS / CALENDAR GENERATION (FIXED & ROBUST)
     # ==========================
     def create_calendar_web(self):
+        """
+        Generate ICS calendar file and send email invitation to attendees.
+        
+        Creates RFC 5545 compliant iCalendar file with:
+        - Proper timezone handling with DST support
+        - VTIMEZONE blocks for calendar client compatibility
+        - Attendee list with RSVP tracking
+        - Reminder/alarm configuration
+        - Virtual meeting links in description
+        
+        Returns:
+            Action dictionary to download ICS file
+        """
         self.ensure_one()
         rec = self
         
-        loc = rec.room_location_ids[0] if rec.room_location_ids else False
-        tz_name = loc.tz if loc and loc.tz else "Asia/Singapore"
-        loc_name = ", ".join(rec.room_location_ids.mapped('name'))
+        # 1. Setup time and location data (using helper to avoid duplication)
+        local_times = rec._compute_local_times()
+        tz_name = local_times['tz_name']
+        tz_offset_str = local_times['tz_offset_str']
         
-        tz = pytz.timezone(tz_name)
-        current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
-        offset_hours = current_offset.total_seconds() / 3600
+        loc_name = ", ".join(rec.room_location_ids.mapped('name')) if rec.room_location_ids else "Virtual"
+        
+        formatted_start_time = local_times['formatted_date']
+        start_time_hours = local_times['start_time_hours']
+        end_time_hours = local_times['end_time_hours']
+        
+        local_start = local_times['local_start']
+        local_end = local_times['local_end']
+        create_time = rec.create_date.astimezone(local_times['tz'])
 
-        start_time = rec.start_date + timedelta(hours=offset_hours)
-        end_time = rec.end_date + timedelta(hours=offset_hours)
-        create_time = rec.create_date + timedelta(hours=offset_hours)
-        
-        formatted_start_time = start_time.strftime('%b %d, %Y')
-        start_time_hours = start_time.strftime('%H:%M')
-        end_time_hours = end_time.strftime('%H:%M')
-        
-        timezone_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset().total_seconds() / 60
-        off_h = int(timezone_offset // 60)
-        off_m = int(abs(timezone_offset) % 60)
-        tz_offset_str = f"{'+' if off_h >= 0 else '-'}{abs(off_h):02d}{abs(off_m):02d}"
-
+        # 2. Build Description & Link
         raw_desc = rec.description or ''
         description_text = raw_desc.replace('\n', '\\n')
         
@@ -710,6 +1022,7 @@ class MeetingEvent(models.Model):
         elif rec.virtual_room_id:
             display_location += f" (Virtual: {rec.virtual_room_id.name})"
 
+        # 3. Build ICS Line-by-Line (Robust against whitespace issues)
         lines = []
         lines.append("BEGIN:VCALENDAR")
         lines.append("VERSION:2.0")
@@ -733,12 +1046,13 @@ class MeetingEvent(models.Model):
         lines.append(f"SEQUENCE:{rec.version}")
         lines.append(f"SUMMARY:{rec.subject}")
         lines.append(f"DTSTAMP:{create_time.strftime('%Y%m%dT%H%M%S')}")
-        lines.append(f"DTSTART;TZID={tz_name}:{start_time.strftime('%Y%m%dT%H%M%S')}")
-        lines.append(f"DTEND;TZID={tz_name}:{end_time.strftime('%Y%m%dT%H%M%S')}")
+        lines.append(f"DTSTART;TZID={tz_name}:{local_start.strftime('%Y%m%dT%H%M%S')}")
+        lines.append(f"DTEND;TZID={tz_name}:{local_end.strftime('%Y%m%dT%H%M%S')}")
         lines.append(f"LOCATION:{display_location}")
         lines.append(f"DESCRIPTION:{description_text}")
         lines.append(f'ORGANIZER;PARTSTAT=ACCEPTED;CN="{rec.create_uid.display_name}":mailto:{rec.create_uid.email}')
         
+        # Add Attendees to ICS
         for user in rec.attendee:
             if user.email:
                 lines.append(f'ATTENDEE;ROLE=REQ-PARTICIPANT;RSVP=TRUE;CN="{user.display_name}":mailto:{user.email}')
@@ -746,6 +1060,7 @@ class MeetingEvent(models.Model):
         if rec.guest_partner_id and rec.guest_partner_id.email:
              lines.append(f'ATTENDEE;ROLE=REQ-PARTICIPANT;RSVP=TRUE;CN="{rec.guest_partner_id.name}":mailto:{rec.guest_partner_id.email}')
 
+        # Alarm
         reminder = int(rec.calendar_alarm.duration) if rec.calendar_alarm and rec.calendar_alarm.duration else 15
         lines.append("BEGIN:VALARM")
         lines.append(f"TRIGGER:-PT{reminder}M")
@@ -756,11 +1071,13 @@ class MeetingEvent(models.Model):
         lines.append("END:VEVENT")
         lines.append("END:VCALENDAR")
 
+        # Join lines with strict CRLF (Standard for ICS)
         ics_content = "\r\n".join(lines)
         
         filename = f"{rec.subject}.ics"
         encoded_ics = base64.b64encode(ics_content.encode('utf-8'))
         
+        # Save Attachment
         Attachment = self.env['ir.attachment'].sudo()
         existing_att = Attachment.search([
             ('res_model', '=', 'meeting.event'),
@@ -780,6 +1097,9 @@ class MeetingEvent(models.Model):
             'public': True
         })
 
+        # ========================================================
+        # SEND EMAIL LOGIC
+        # ========================================================
         recipients = [rec.create_uid.email] 
         for user in rec.attendee:
             if user.email:
@@ -823,6 +1143,7 @@ class MeetingEvent(models.Model):
             mail = self.env['mail.mail'].sudo().create(mail_values)
             mail.send()
             
+            # Log email activity
             rec.message_post(body=f"Email Invitation sent to: {recipients_email}")
 
         return {
@@ -835,30 +1156,53 @@ class MeetingEvent(models.Model):
     # ACTION CANCEL (DELETE ZOOM & RESET FIELDS)
     # ==========================
     def action_cancel(self):
+        """
+        Cancel meeting event and clean up associated resources.
+        
+        This action:
+        1. Security check (only creator or admin can cancel)
+        2. Deletes Zoom meeting from server (if exists)
+        3. Posts cancellation message to chatter
+        4. Deletes all activity notifications
+        5. Cancels all child meeting.rooms records
+        6. Resets all virtual meeting fields
+        7. Changes state to 'cancel'
+        """
+        # === SECURITY CHECK FIRST (BEFORE TOUCHING ZOOM) ===
+        is_manager = self.env.user.has_group('meeting_rooms.group_meeting_manager')
+        for ev in self:
+            if ev.create_uid != self.env.user and not is_manager:
+                raise UserError(_(
+                    f"ACCESS DENIED!\n\n"
+                    f"You cannot cancel this meeting.\n"
+                    f"Only the creator ({ev.create_uid.name}) or a Meeting Administrator can cancel meetings."
+                ))
+        # ====================================================
+        
         MeetingRooms = self.env['meeting.rooms']
         for ev in self:
-            # 1. Delete Zoom (Use helper with current context room)
+            # 1. Delete Zoom Meeting from Server (only after security check passed)
             if ev.zoom_id and ev.virtual_room_id and ev.virtual_room_id.provider == 'zoom':
                 ev._logic_delete_zoom_meeting(ev.zoom_id, context_room=ev.virtual_room_id)
 
-            # 2. Custom Log
+            # 2. Post cancellation message
             loc_name = ", ".join(ev.room_location_ids.mapped('name')) or "Virtual"
             msg_body = f"Meeting <b>{ev.subject}</b> from {ev.start_date} to {ev.end_date} in <b>{loc_name}</b> Is Cancelled"
             ev.message_post(body=msg_body)
 
-            # 3. Wipe Activities
+            # 3. Delete all activities
             existing_activities = self.env['mail.activity'].search([
                 ('res_id', '=', ev.id),
                 ('res_model', '=', 'meeting.event')
             ])
             existing_activities.unlink()
 
-            # 4. Cancel Child Rooms
+            # 4. Cancel child meeting.rooms records
             rooms = MeetingRooms.search([('meeting_event_id', '=', ev.id)])
             if rooms:
-                rooms.with_context(skip_event_sync=True, skip_booking_check=True, bypass_security_check=True).write({'state': 'cancel'})
+                rooms.with_context(skip_event_sync=True, skip_booking_check=True, skip_readonly_check=True).write({'state': 'cancel'})
             
-            # 5. Cancel Self & Reset
+            # 5. Cancel event and reset all virtual meeting fields
             ev.write({
                 'state': 'cancel',
                 'zoom_id': False,
@@ -870,11 +1214,16 @@ class MeetingEvent(models.Model):
         return True
 
     def action_draft(self):
+        """
+        Reset meeting event to draft state.
+        
+        Also resets all associated meeting.rooms records to draft.
+        """
         MeetingRooms = self.env['meeting.rooms']
         for ev in self:
             rooms = MeetingRooms.search([('meeting_event_id', '=', ev.id)])
             if rooms:
-                rooms.with_context(skip_event_sync=True, skip_booking_check=True, bypass_security_check=True).write({'state': 'draft'})
+                rooms.with_context(skip_event_sync=True, skip_booking_check=True, skip_readonly_check=True).write({'state': 'draft'})
             ev.write({'state': 'draft'})
         return True
 
@@ -883,16 +1232,27 @@ class MeetingEvent(models.Model):
     # ==========================
     @api.model
     def _cron_auto_delete_activities(self):
+        """
+        Scheduled job to delete stale activity notifications.
+        
+        Automatically removes activities with deadlines before today for both
+        meeting.event and meeting.rooms models to keep activity list clean.
+        
+        This method is called by Odoo cron scheduler (configured in data/cron_job.xml).
+        """
+        # Delete stale activities for meeting.event (parent)
         activities_event = self.env['mail.activity'].search([
             ('res_model', '=', 'meeting.event'),
             ('date_deadline', '<', fields.Date.today())
         ])
 
+        # Delete stale activities for meeting.rooms (child)
         activities_rooms = self.env['mail.activity'].search([
             ('res_model', '=', 'meeting.rooms'),
             ('date_deadline', '<', fields.Date.today())
         ])
 
+        # Combine results
         all_activities = activities_event + activities_rooms
         count = len(all_activities)
 
@@ -906,8 +1266,16 @@ class MeetingEvent(models.Model):
     # SMART BUTTON ACTION
     # ==========================
     def open_zoom_link(self):
+        """
+        Open virtual meeting link in new browser tab.
+        
+        Automatically prepends 'https://' if protocol is missing.
+        
+        Returns:
+            Action dictionary to open URL in new window
+        """
         self.ensure_one()
-        # AUTO FIX MISSING HTTPS
+        # Auto-fix missing HTTPS protocol
         if self.zoom_link and not self.zoom_link.startswith(('http://', 'https://')):
             return {
                 'type': 'ir.actions.act_url',

@@ -10,13 +10,13 @@ class ResUsers(models.Model):
     # Relasi balik ke booking link
     booking_link_ids = fields.One2many('meeting.booking.link', 'user_id', string="Booking Links")
     
-    # Field penanda apakah user ini sudah punya link atau belum
+    # Boolean field to indicate if user already has a booking link
     has_booking_link = fields.Boolean(compute='_compute_has_booking_link', store=True)
 
     @api.depends('booking_link_ids')
     def _compute_has_booking_link(self):
         for user in self:
-            # Hitung apakah ada link yang user_id nya adalah user ini
+            # Count booking links for this user
             count = self.env['meeting.booking.link'].search_count([('user_id', '=', user.id)])
             user.has_booking_link = count > 0
 
@@ -26,7 +26,7 @@ class MeetingBookingLink(models.Model):
     _rec_name = 'name'
 
     _sql_constraints = [
-        ('user_id_uniq', 'unique(user_id)', 'User ini sudah memiliki Booking Link! Tidak bisa buat double.')
+        ('user_id_uniq', 'unique(user_id)', 'This user already has a Booking Link! Cannot create duplicate.')
     ]
 
     name = fields.Char(string="Link Title", required=True, default="My Booking Link")
@@ -42,7 +42,7 @@ class MeetingBookingLink(models.Model):
     active = fields.Boolean(default=True)
     booking_url = fields.Char("Full URL", compute="_compute_url")
 
-    # Helper Fields
+    # Helper fields for display and permissions
     is_current_user = fields.Boolean(compute='_compute_permissions')
     is_admin = fields.Boolean(compute='_compute_permissions')
 
@@ -91,8 +91,8 @@ class MeetingBookingLink(models.Model):
 
     def init(self):
         """
-        Fungsi ini dipanggil otomatis saat Module di-Upgrade.
-        Gunanya untuk memaksa update field has_booking_link di ResUsers.
+        This function is automatically called when module is upgraded.
+        Purpose: force update has_booking_link field in ResUsers model.
         """
         all_links = self.search([])
         users_with_links = all_links.mapped('user_id')

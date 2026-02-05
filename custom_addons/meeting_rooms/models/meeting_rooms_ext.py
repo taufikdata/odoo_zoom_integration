@@ -5,10 +5,9 @@ from odoo.exceptions import ValidationError
 class MeetingRoomsExt(models.Model):
     _inherit = 'meeting.rooms'
 
-    # ---------------------------------------------------------------------
-    # LINK FIELD
-    # ---------------------------------------------------------------------
-    # REVISI: Ganti 'set null' jadi 'cascade' agar anak ikut terhapus
+    # Link field
+    # =========================================================================
+    # NOTE: Updated to use 'cascade' ondelete to ensure child records deleted
     meeting_event_id = fields.Many2one(
         'meeting.event',
         string="Meeting Event Ref",
@@ -17,10 +16,10 @@ class MeetingRoomsExt(models.Model):
     )
 
     # =========================================================
-    # Helpers
+    # Helper methods
     # =========================================================
     def _has_event_model(self):
-        """Safety: jangan KeyError kalau meeting.event belum ter-load."""
+        """Safety: prevent KeyError if meeting.event model not yet loaded."""
         return 'meeting.event' in self.env.registry.models
 
     def _linked_event(self):
@@ -31,8 +30,8 @@ class MeetingRoomsExt(models.Model):
 
     def _push_rooms_to_event(self, ev):
         """
-        Push DATA PENTING (Subject, Tanggal, dll) dari meeting.rooms -> meeting.event
-        TAPI TIDAK PUSH STATUS.
+        Push important data (subject, dates, etc) from meeting.rooms → meeting.event.
+        Do NOT push status (state).
         """
         self.ensure_one()
         if not ev:
@@ -52,7 +51,7 @@ class MeetingRoomsExt(models.Model):
         if getattr(self, 'room_location', False) and self.room_location:
             vals['room_location_ids'] = [(6, 0, [self.room_location.id])]
 
-        # Update data ke Event, tapi pakai context skip_rooms_sync agar tidak looping
+        # Update event with context flag to prevent infinite loop
         ev.with_context(
             skip_rooms_sync=True,
             skip_event_sync=True,
@@ -62,7 +61,8 @@ class MeetingRoomsExt(models.Model):
 
     def _super_call_or_fallback_state(self, rec, state):
         """
-        Safety wrapper untuk memanggil fungsi asli tombol.
+        Safety wrapper to call original button functions.
+        Fallback: if function not found, directly update state.
         """
         self.ensure_one()
         try:
@@ -73,9 +73,9 @@ class MeetingRoomsExt(models.Model):
             if state == 'draft':
                 return super(MeetingRoomsExt, rec).action_draft()
         except Exception:
-            # Fallback jika fungsi asli tidak ada/error
-            # PENTING: Tambahkan bypass_security_check disini juga untuk jaga-jaga
-            rec.with_context(skip_booking_check=True, bypass_security_check=True).write({'state': state})
+            # Fallback if original function not found or has error
+            # IMPORTANT: Add skip_readonly_check here too for safety
+            rec.with_context(skip_booking_check=True, skip_readonly_check=True).write({'state': state})
             return True
 
     # =========================================================
@@ -92,6 +92,18 @@ class MeetingRoomsExt(models.Model):
         return True
 
     def action_cancel(self):
+        """Cancel meeting room with security check."""
+        # === SECURITY CHECK FIRST ===
+        is_manager = self.env.user.has_group('meeting_rooms.group_meeting_manager')
+        for rec in self:
+            if rec.create_uid != self.env.user and not is_manager:
+                raise ValidationError(_(
+                    f"ACCESS DENIED!\n\n"
+                    f"You cannot cancel this booking.\n"
+                    f"Only the creator ({rec.create_uid.name}) or a Meeting Administrator can cancel bookings."
+                ))
+        # ================================
+        
         for rec in self:
             rec._super_call_or_fallback_state(rec, 'cancel')
         return True
@@ -131,15 +143,15 @@ class MeetingRoomsExt(models.Model):
         return res
 
     # =========================================================
-    # LEGACY SYNC (DATA LAMA)
+    # Legacy data migration (module upgrade)
     # =========================================================
     @api.model
     def action_sync_legacy_data(self):
         """
-        Dijalankan otomatis saat Upgrade Module via XML.
-        Menangani overlap data lama agar tidak error saat install.
+        Automatically called when module is upgraded via XML.
+        Handles old data overlap to prevent errors during installation.
         """
-        # Cari room yang belum punya bapak (Event)
+        # Find meeting.rooms records not linked to any event yet
         orphaned_rooms = self.search([('meeting_event_id', '=', False)])
         
         MeetingEvent = self.env['meeting.event']
@@ -148,43 +160,43 @@ class MeetingRoomsExt(models.Model):
         skipped_count = 0
 
         for room in orphaned_rooms:
-            # 1. Cek apakah Event sudah ada?
+            # 1. Check if corresponding event already exists?
             parent_event = MeetingEvent.search([
                 ('subject', '=', room.subject),
                 ('start_date', '=', room.start_date),
                 ('end_date', '=', room.end_date)
             ], limit=1)
 
-            # Context SAKTI: 
-            # - mail_activity_automation_skip: Matikan otomatis activity Odoo standar
-            # - skip_double_booking_check: Custom context untuk bypass constrain overlap kita
+            # Context flags to prevent automation and errors during sync
+            # - mail_activity_automation_skip: Disable Odoo's auto activity
+            # - skip_double_booking_check: Bypass constraint during legacy sync
             ctx_sync = {
                 'force_sync': True, 
-                'bypass_security_check': True,
+                'skip_readonly_check': True,
                 'mail_activity_automation_skip': True, 
                 'mail_create_nosubscribe': True,
-                'skip_double_booking_check': True # Bypass constrain
+                'skip_double_booking_check': True # Bypass constraint
             }
 
             if parent_event:
-                # KASUS A: Link ke Event existing
+                # CASE A: Link room to existing event
                 room.with_context(ctx_sync).write({'meeting_event_id': parent_event.id})
                 linked_count += 1
             else:
-                # KASUS B: Buatkan Event baru
-                # REVISI: Cek manual apakah ada event lain yang overlap?
-                # Jika overlap parah, kita buat eventnya dalam status DRAFT saja agar aman.
+                # CASE B: Create new parent event
+                # NOTE: Manual check for overlap with other events
+                # If severe overlap detected, create event in draft state for safety
                 
-                # Logic sederhana deteksi overlap di Event lain
+                # Simple overlap detection logic
                 overlap = MeetingEvent.search_count([
                     ('start_date', '<', room.end_date),
                     ('end_date', '>', room.start_date),
-                    ('state', '=', 'confirm') # Asumsi yang confirm yang valid
+                    ('state', '=', 'confirm') # Assume only confirmed events are valid
                 ])
                 
                 state_to_set = 'confirm'
                 if overlap > 0:
-                    state_to_set = 'draft' # Turunkan jadi draft jika bentrok
+                    state_to_set = 'draft' # Downgrade to draft if conflict
                 
                 vals = {
                     'subject': room.subject,
