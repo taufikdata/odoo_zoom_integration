@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    
+    <record id="view_meeting_booking_link_form" model="ir.ui.view">
+        <field name="name">meeting.booking.link.form</field>
+        <field name="model">meeting.booking.link</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="action_regenerate_token" 
+                            string="Regenerate Token" 
+                            type="object" 
+                            confirm="Link lama akan mati. Lanjutkan?" 
+                            class="btn-warning"
+                            attrs="{'invisible': [('is_current_user', '=', False), ('is_admin', '=', False)]}"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <label for="name" class="oe_edit_only"/>
+                        <h1><field name="name" placeholder="e.g. Link for VIP Clients"/></h1>
+                    </div>
+                    <group>
+                        <field name="is_current_user" invisible="1"/>
+                        <field name="is_admin" invisible="1"/>
+                        <field name="create_date" invisible="1"/>
+                        
+                        <group>
+                            <field name="user_id" 
+                                attrs="{'readonly': [('is_admin', '=', False), ('create_date', '!=', False)]}" 
+                                domain="[('share', '=', False)]"
+                                options="{'no_create': True, 'no_open': True}"/>
+                                
+                            <field name="active" widget="boolean_toggle" 
+                                attrs="{'readonly': [('is_current_user', '=', False), ('is_admin', '=', False)]}"/>
+                        </group>
+                        <group>
+                            <field name="booking_url" widget="CopyClipboardChar" readonly="1"/>
+                            <field name="token" groups="base.group_no_one"/>
+                        </group>
+                    </group>
+                    
+                    <div class="alert alert-info" role="alert" attrs="{'invisible': [('is_current_user', '=', False), ('is_admin', '=', False)]}">
+                        Ini link booking aktif. Share kepada tamu.
+                    </div>
+                    
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_meeting_booking_link_kanban" model="ir.ui.view">
+        <field name="name">meeting.booking.link.kanban</field>
+        <field name="model">meeting.booking.link</field>
+        <field name="arch" type="xml">
+            <kanban class="o_kanban_mobile o_kanban_dashboard">
+                <field name="name"/>
+                <field name="user_id"/>
+                <field name="booking_url"/>
+                <field name="active"/>
+                <field name="is_current_user"/>
+                <field name="is_admin"/> 
+                <templates>
+                    <t t-name="kanban-box">
+                        <t t-if="record.is_current_user.raw_value or record.is_admin.raw_value">
+                            <div class="oe_kanban_global_click oe_kanban_card p-3">
+                                <t t-call="kanban-content"/>
+                            </div>
+                        </t>
+                        
+                        <t t-else="">
+                            <div class="oe_kanban_card p-3" style="cursor: default;">
+                                <t t-call="kanban-content"/>
+                            </div>
+                        </t>
+                    </t>
+
+                    <t t-name="kanban-content">
+                        <div class="d-flex flex-column h-100">
+                            <div class="mb-2 d-flex justify-content-between align-items-start">
+                                <div class="text-truncate pr-2">
+                                    <strong style="font-size: 1.1em; color: #212529;">
+                                        <field name="name"/>
+                                    </strong>
+                                    <div class="text-muted small mt-1">
+                                        <i class="fa fa-user-circle mr-1"/> <field name="user_id"/>
+                                    </div>
+                                </div>
+                                <t t-if="record.is_current_user.raw_value">
+                                    <span class="badge badge-pill badge-info">My Link</span>
+                                </t>
+                            </div>
+
+                            <div class="o_form_view my-3 w-100">
+                                <div class="o_group">
+                                    <field name="booking_url" widget="CopyClipboardChar" class="w-100"/>
+                                </div>
+                            </div>
+
+                            <div class="mt-auto pt-2 border-top d-flex justify-content-between align-items-center">
+                                <span class="text-muted small">Status Link</span>
+                                <field name="active" widget="boolean_toggle" attrs="{'readonly': [('is_current_user', '=', False), ('is_admin', '=', False)]}"/>
+                            </div>
+                        </div>
+                    </t>
+                </templates>
+            </kanban>
+        </field>
+    </record>
+
+    <record id="action_meeting_booking_link" model="ir.actions.act_window">
+        <field name="name">All Booking Links</field>
+        <field name="res_model">meeting.booking.link</field>
+        <field name="view_mode">kanban,tree,form</field> 
+    </record>
+
+    <record id="action_edit_my_booking_link_server" model="ir.actions.server">
+        <field name="name">Edit My Booking Link</field>
+        <field name="model_id" ref="model_meeting_booking_link"/>
+        <field name="state">code</field>
+        <field name="code">
+            action = model.action_open_my_link()
+        </field>
+    </record>
+
+    <menuitem id="menu_open_my_link"
+              name="Edit My Booking Link"
+              parent="menu_meeting_rooms"
+              action="action_edit_my_booking_link_server"
+              sequence="10"/>
+
+    <menuitem id="menu_meeting_booking_link" 
+              name="Booking Links List" 
+              parent="menu_meeting_rooms" 
+              action="action_meeting_booking_link" 
+              sequence="20"/>
+
+</odoo>

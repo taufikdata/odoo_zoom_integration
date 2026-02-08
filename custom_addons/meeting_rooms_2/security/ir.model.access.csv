@@ -1,0 +1,13 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_meeting_rooms,access_meeting_rooms,model_meeting_rooms,base.group_user,1,1,1,1
+access_room_location,access_room_location,model_room_location,base.group_user,1,1,1,1
+access_meeting_event,access_meeting_event,model_meeting_event,base.group_user,1,1,1,1
+access_virtual_room_user,virtual.room user,model_virtual_room,base.group_user,1,1,1,0
+access_meeting_booking_link_user,meeting.booking.link.user,model_meeting_booking_link,base.group_user,1,1,0,1
+access_meeting_booking_link_portal,meeting.booking.link.portal,model_meeting_booking_link,base.group_portal,1,0,0,0
+access_meeting_booking_link_manager,meeting.booking.link.manager,model_meeting_booking_link,base.group_system,1,1,1,1
+access_meeting_rooms_mgr,meeting_rooms_mgr,model_meeting_rooms,meeting_rooms_2.group_meeting_manager,1,1,1,1
+access_room_location_mgr,room_location_mgr,model_room_location,meeting_rooms_2.group_meeting_manager,1,1,1,1
+access_meeting_event_mgr,meeting_event_mgr,model_meeting_event,meeting_rooms_2.group_meeting_manager,1,1,1,1
+access_virtual_room_mgr,virtual_room_mgr,model_virtual_room,meeting_rooms_2.group_meeting_manager,1,1,1,1
+access_meeting_booking_link_mgr_new,booking_link_mgr_new,model_meeting_booking_link,meeting_rooms_2.group_meeting_manager,1,1,1,1

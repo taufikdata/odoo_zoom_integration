@@ -50,7 +50,7 @@ class MeetingBookingLink(models.Model):
     def _compute_permissions(self):
         # REVISED: Check Meeting Manager Group, NOT System Administrator
         # Previously: has_group('base.group_system') -> Wrong target
-        is_admin_user = self.env.user.has_group('meeting_rooms.group_meeting_manager')
+        is_admin_user = self.env.user.has_group('meeting_rooms_2.group_meeting_manager')
         
         for rec in self:
             rec.is_current_user = (rec.user_id == self.env.user)

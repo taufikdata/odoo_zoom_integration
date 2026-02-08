@@ -3,7 +3,7 @@
     <record id="mail_act_meeting_rooms_approval" model="mail.activity.type">
         <field name="name">Meeting Rooms</field>
         <field name="icon">fa-sun-o</field>
-        <field name="res_model_id" ref="meeting_rooms.model_meeting_rooms"/>
+        <field name="res_model_id" ref="meeting_rooms_2.model_meeting_rooms"/>
     </record>
 
     <record id="meeting_rooms_calendar_view" model="ir.ui.view">
@@ -63,10 +63,6 @@
                         <group>
                             <field name="start_date"/>
                             <field name="end_date"/>
-                            
-                            <separator string="Timezone Breakdown"/>
-                            <field name="multi_timezone_display" nolabel="1" colspan="2"/>
-                            
                             <field name="attendee" widget="many2many_tags"/>
                             <button name="create_calendar_web" type="object" string="Send Email"/>
                         </group>
@@ -109,13 +105,7 @@
                 <sheet>
                     <group>
                         <group>
-                            <field name="name" placeholder="e.g. Ruang Meeting Utama"/>
-                            
-                            <field name="tz" 
-                                   required="1" 
-                                   options="{'no_create': True, 'no_open': True}" 
-                                   placeholder="Select Timezone (e.g. Asia/Jakarta)"/>
-                            
+                            <field name="name"/>
                             <field name="location_address"/>
                             <field name="location_description"/>
                             <field name="active"/>

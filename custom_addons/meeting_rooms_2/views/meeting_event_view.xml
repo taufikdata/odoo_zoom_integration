@@ -38,52 +38,52 @@
         </field>
     </record>
 
-        <record id="meeting_event_form_view" model="ir.ui.view">
+    <record id="meeting_event_form_view" model="ir.ui.view">
         <field name="name">meeting_event_form_view</field>
         <field name="model">meeting.event</field>
         <field name="arch" type="xml">
             <form string="Meeting Event">
-            <header>
-                <button name="action_confirm" 
-                    type="object" 
-                    states="draft" 
-                    string="Confirm" 
-                    class="btn-primary"/>
+                <header>
+                    <button name="action_confirm" 
+                            type="object" 
+                            states="draft" 
+                            string="Confirm" 
+                            class="btn-primary"/>
                     
-                <button name="action_generate_virtual_link" 
-                    type="object" 
-                    string="Generate Meeting Link" 
-                    class="oe_highlight"
-                    icon="fa-video-camera"
-                    attrs="{'invisible': ['|', '|', ('virtual_room_id', '=', False), ('state', '!=', 'confirm'), ('zoom_id', '!=', False)]}"/>
+                    <button name="action_generate_virtual_link" 
+                            type="object" 
+                            string="Generate Meeting Link" 
+                            class="oe_highlight"
+                            icon="fa-video-camera"
+                            attrs="{'invisible': ['|', '|', ('virtual_room_id', '=', False), ('state', '!=', 'confirm'), ('zoom_id', '!=', False)]}"/>
 
-                <button name="action_get_ai_summary" 
-                    type="object" 
-                    string="Get AI Summary" 
-                    class="oe_highlight"
-                    icon="fa-magic"
-                    attrs="{'invisible': ['|', '|', ('virtual_room_id', '=', False), ('state', '!=', 'confirm'), ('zoom_id', '=', False)]}"/>
+                    <button name="action_get_ai_summary" 
+                            type="object" 
+                            string="Get AI Summary" 
+                            class="oe_highlight"
+                            icon="fa-magic"
+                            attrs="{'invisible': ['|', '|', ('virtual_room_id', '=', False), ('state', '!=', 'confirm'), ('zoom_id', '=', False)]}"/>
 
-                <button name="action_cancel" 
-                    type="object" 
-                    states="confirm" 
-                    string="Cancel" 
-                    class="btn-secondary"
-                    confirm="WARNING: Are you sure you want to cancel this Event? This action will automatically cancel ALL connected Meeting Rooms."/>
+                    <button name="action_cancel" 
+                            type="object" 
+                            states="confirm" 
+                            string="Cancel" 
+                            class="btn-secondary"
+                            confirm="WARNING: Are you sure you want to cancel this Event? This action will automatically cancel ALL connected Meeting Rooms."/>
 
-                <button name="action_draft" 
-                    type="object" 
-                    states="cancel" 
-                    string="Set To Draft" 
-                    class="btn-secondary"
-                    confirm="WARNING: Setting Event to Draft will also set ALL Meeting Rooms to Draft. Continue?"/>
+                    <button name="action_draft" 
+                            type="object" 
+                            states="cancel" 
+                            string="Set To Draft" 
+                            class="btn-secondary"
+                            confirm="WARNING: Setting Event to Draft will also set ALL Meeting Rooms to Draft. Continue?"/>
                             
-                <field name="state" widget="statusbar" statusbar_visible="draft,confirm,cancel"/>
-            </header>
+                    <field name="state" widget="statusbar" statusbar_visible="draft,confirm,cancel"/>
+                </header>
 
                 <sheet>
                     <div class="oe_button_box" name="button_box">
-                        <button name="%(meeting_rooms.action_meeting_booking_link)d" 
+                        <button name="%(meeting_rooms_2.action_meeting_booking_link)d" 
                                 type="action" 
                                 class="oe_stat_button" 
                                 icon="fa-link" 
@@ -119,13 +119,7 @@
                         </group>
                         <group>
                             <field name="start_date"/>
-                            <field name="start_date_utc_str" readonly="1" decoration-info="1"/>
-                            
                             <field name="end_date"/>
-                            <field name="end_date_utc_str" readonly="1" decoration-info="1"/>
-
-                            <separator string="Timezone Breakdown"/>
-                            <field name="multi_timezone_display" nolabel="1" colspan="2"/>
 
                             <field name="attendee"
                                    options="{'no_create_edit': True,'no_create': True}"
@@ -219,7 +213,7 @@
 
     <menuitem name="Meeting Events"
               id="menu_meeting_event"
-              parent="meeting_rooms.menu_meeting_rooms"
+              parent="meeting_rooms_2.menu_meeting_rooms"
               action="action_meeting_event"
               sequence="1"/> 
 

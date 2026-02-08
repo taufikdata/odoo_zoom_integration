@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <odoo>
     <template id="meeting_rooms_html" name="Meeting Rooms HTML">
-        <t t-name="meeting_rooms.meeting_rooms_html">
+        <t t-name="meeting_rooms_2.meeting_rooms_html">
             <html lang="en">
                 <head>
                     <meta charset="utf-8"/>
@@ -14,10 +14,10 @@
                     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 
                     <!-- CSS: jangan pakai text/scss langsung -->
-                    <link rel="stylesheet" href="/meeting_rooms/static/src/css/index.css"/>
+                    <link rel="stylesheet" href="/meeting_rooms_2/static/src/css/index.css"/>
                     
                     <!-- Module JS -->
-                    <script type="text/javascript" src="/meeting_rooms/static/src/js/index.js"></script>
+                    <script type="text/javascript" src="/meeting_rooms_2/static/src/js/index.js"></script>
                 </head>
 
                 <body>
@@ -44,7 +44,7 @@
                     <input type="hidden" id="create_date" t-att-value="docs.create_date"/>
                     <input type="hidden" id="write_date" t-att-value="docs.write_date"/>
                     <input type="hidden" id="version" t-att-value="docs.version"/>
-                    <input type="hidden" id="roomTZ" t-att-value="host_tz_name"/>
+                    <input type="hidden" id="roomTZ" t-att-value="docs.room_location.tz"/>
                     <input type="hidden" id="tzOffset" t-att-value="docs.room_location.tz_offset"/>
                 </body>
             </html>

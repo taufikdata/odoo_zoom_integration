@@ -9,32 +9,18 @@ import base64
 
 
 class MeetingRoomsWebsite(http.Controller):
-    def _get_host_tz_name(self, meeting):
-        event = getattr(meeting, 'meeting_event_id', False)
-        if event and event.host_user_id and event.host_user_id.tz:
-            return event.host_user_id.tz
-        if meeting.create_uid and meeting.create_uid.tz:
-            return meeting.create_uid.tz
-        return 'UTC'
-
-    def _convert_utc_to_tz(self, dt, tz_name):
-        if not dt:
-            return dt
-        tz = pytz.timezone(tz_name or 'UTC')
-        if dt.tzinfo is None:
-            dt = pytz.utc.localize(dt)
-        return dt.astimezone(tz)
-
     @http.route('/create-icalendar', auth='user', website=True)
     def create_icalendar(self, **kw):
         meeting_id = kw.get('id')
         meeting = request.env['meeting.rooms'].sudo().browse(int(meeting_id))
         attendee = []
-        host_tz_name = self._get_host_tz_name(meeting)
-        start_time = self._convert_utc_to_tz(meeting.start_date, host_tz_name)
-        end_time = self._convert_utc_to_tz(meeting.end_date, host_tz_name)
-        create_time = self._convert_utc_to_tz(meeting.create_date, host_tz_name)
-        write_time = self._convert_utc_to_tz(meeting.write_date, host_tz_name)
+        tz = pytz.timezone(meeting.room_location.tz or "Asia/Singapore")
+        current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
+        offset_hours = current_offset.total_seconds() / 3600
+        start_time = meeting.start_date + timedelta(hours=offset_hours)
+        end_time = meeting.end_date + timedelta(hours=offset_hours)
+        create_time = meeting.create_date + timedelta(hours=offset_hours)
+        write_time = meeting.write_date + timedelta(hours=offset_hours)
         for user in meeting.attendee :
             if user.display_name and user.email :
                 attendee.append({
@@ -46,11 +32,10 @@ class MeetingRoomsWebsite(http.Controller):
             'start_date' : start_time,
             'end_date' : end_time,
             'create_date' : create_time,
-            'write_date' : write_time,
-            'host_tz_name': host_tz_name,
+            'write_date' : write_time
 
         }
-        return request.render("meeting_rooms.meeting_rooms_html", vals)
+        return request.render("meeting_rooms_2.meeting_rooms_html", vals)
 
     @http.route('/add-icalendar-file', type='http', auth='user', website=True, csrf=True)
     def add_calendar_file(self, **kw):
@@ -86,9 +71,11 @@ class MeetingRoomsWebsite(http.Controller):
                 'public': True
             })
         record = request.env['meeting.rooms'].sudo().browse(meeting_id)
-        host_tz_name = self._get_host_tz_name(record)
-        start_time = self._convert_utc_to_tz(record.start_date, host_tz_name)
-        end_time = self._convert_utc_to_tz(record.end_date, host_tz_name)
+        tz = pytz.timezone(record.room_location.tz or "Asia/Singapore")
+        current_offset = datetime.now(pytz.utc).astimezone(tz).utcoffset()
+        offset_hours = current_offset.total_seconds() / 3600
+        start_time = record.start_date + timedelta(hours=offset_hours)
+        end_time = record.end_date + timedelta(hours=offset_hours)
         formatted_start_time = start_time.strftime('%b %d, %Y')
         start_time_hours = start_time.strftime('%H:%M')
         formatted_end_time = end_time.strftime('%b %d, %Y %H:%M')
@@ -119,7 +106,7 @@ class MeetingRoomsWebsite(http.Controller):
                     </tr>
                     <tr>
                         <td>Time</td>
-                        <td>: {start_time_hours} - {end_time_hours} ({host_tz_name}'s Time)</td>
+                        <td>: {start_time_hours} - {end_time_hours} ({record.room_location.tz}'s Time)</td>
                     </tr>
                     <tr>
                         <td>Duration</td>

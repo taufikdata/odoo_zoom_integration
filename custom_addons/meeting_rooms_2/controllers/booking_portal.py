@@ -35,67 +35,52 @@ class BookingPortal(http.Controller):
         return request.make_response(image_data, headers)
 
     # =========================================================================
-    # 1. Calendar page (OPTIMIZED: 1 QUERY ONLY - SCALABILITY FIX)
+    # 1. Calendar page 
     # =========================================================================
     @http.route('/book/<string:token>', type='http', auth='public', website=True)
     def booking_calendar(self, token, **kw):
+        _logger.info(f"\n\n=== [DEBUG START] OPENING CALENDAR PAGE ({token}) ===")
+        
         link_obj = request.env['meeting.booking.link'].sudo().search([
             ('token', '=', token),
             ('active', '=', True)
         ], limit=1)
 
         if not link_obj:
+            _logger.error("Token not found or inactive")
             return request.render('http_routing.404') 
 
         host_user = link_obj.user_id
+        host_tz_name = host_user.tz
         
-        if not host_user.tz:
+        _logger.info(f"HOST FOUND: {host_user.name} | TIMEZONE: {host_tz_name}")
+
+        if not host_tz_name:
             return "ERROR: Host user does not have a timezone set."
         
         try:
-            host_tz = pytz.timezone(host_user.tz)
+            host_tz = pytz.timezone(host_tz_name)
         except:
-            return f"ERROR: Invalid timezone '{host_user.tz}'."
+            _logger.error(f"Invalid Timezone: {host_tz_name}")
+            return f"ERROR: Invalid timezone '{host_tz_name}'."
 
-        # Setup Time
+        # Current time reference
         now_utc = datetime.now(pytz.utc)
         now_host = now_utc.astimezone(host_tz)
         
-        # === QUERY OPTIMIZATION (SCALABILITY FIX) ===
-        # Instead of querying search_count in loop (48x per page),
-        # we query once upfront and cache results in RAM.
-        # Fetch all confirmed meetings for host in 7-day window.
-        
-        window_start_utc = now_utc.replace(tzinfo=None)
-        window_end_utc = (now_utc + timedelta(days=7)).replace(tzinfo=None)
-        
-        MeetingEvent = request.env['meeting.event'].sudo()
-        
-        # SINGLE QUERY: Fetch all events in the 7-day window
-        existing_events = MeetingEvent.search([
-            ('start_date', '<', window_end_utc),
-            ('end_date', '>', window_start_utc),
-            ('state', '=', 'confirm'),
-            ('attendee', 'in', [host_user.id])
-        ])
-        
-        # Cache busy slots in RAM as list of tuples
-        # Format: [(start_utc, end_utc), (start_utc, end_utc), ...]
-        busy_slots_cache = []
-        for ev in existing_events:
-            busy_slots_cache.append((ev.start_date, ev.end_date))
-        
-        # === END OPTIMASI ===
+        _logger.info(f"NOW (UTC): {now_utc}")
+        _logger.info(f"NOW (HOST): {now_host}")
         
         dates = []
-        
+        MeetingEvent = request.env['meeting.event'].sudo()
+
         # Generate next 6 days
         for i in range(6): 
             current_date_host = now_host.date() + timedelta(days=i)
             day_slots = []
             
             for hour in range(9, 17): 
-                # 1. Create Timestamp in HOST TIMEZONE
+                # 1. Create Timestamp in HOST TIMEZONE (e.g. 09:00 Europe/Brussels)
                 slot_naive = datetime.combine(current_date_host, time(hour, 0, 0))
                 slot_aware_host = host_tz.localize(slot_naive)
                 
@@ -103,23 +88,27 @@ class BookingPortal(http.Controller):
                 if slot_aware_host < now_host:
                     continue
 
-                # 2. Convert to UTC (Naive) for Comparison
+                # 2. Calculate UTC equivalent for DB check
                 slot_aware_utc = slot_aware_host.astimezone(pytz.utc)
                 end_aware_utc = slot_aware_utc + timedelta(hours=1)
 
                 db_start = slot_aware_utc.replace(tzinfo=None)
                 db_end = end_aware_utc.replace(tzinfo=None)
 
-                # 3. CHECK FOR CONFLICT IN RAM (Fast & CPU-efficient - No DB query)
-                is_busy = False
-                for b_start, b_end in busy_slots_cache:
-                    # Overlap logic: (StartA < EndB) and (EndA > StartB)
-                    if db_start < b_end and db_end > b_start:
-                        is_busy = True
-                        break
-                
-                if not is_busy:
-                    local_val = slot_naive.strftime('%Y-%m-%d %H:%M:%S')
+                # Check Availability
+                domain = [
+                    ('start_date', '<', db_end),
+                    ('end_date', '>', db_start),
+                    ('state', '=', 'confirm'),
+                    ('attendee', 'in', [host_user.id])
+                ]
+                count_busy = MeetingEvent.search_count(domain)
+
+                if count_busy == 0:
+                # SEND LOCAL (HOST) TIME TO URL
+                # Later in submit, we'll convert back based on Host TZ
+                local_val = slot_naive.strftime('%Y-%m-%d %H:%M:%S')
+                    
                     day_slots.append({
                         'time_str': f"{hour:02d}:00", 
                         'val': local_val
@@ -131,11 +120,12 @@ class BookingPortal(http.Controller):
                     'slots': day_slots
                 })
 
-        return request.render('meeting_rooms.portal_booking_template', {
+        _logger.info("=== [DEBUG END] CALENDAR RENDERED ===\n")
+        return request.render('meeting_rooms_2.portal_booking_template', {
             'host': host_user,
             'dates': dates,
             'token': token,
-            'tz_name': host_user.tz,
+            'tz_name': host_tz_name,
         })
 
     # =========================================================================
@@ -149,35 +139,21 @@ class BookingPortal(http.Controller):
         host_user = link_obj.user_id
         
         try:
-            # Parse LOCAL string (Host timezone)
+            # Display logic only
             dt_naive = datetime.strptime(time_str.strip(), '%Y-%m-%d %H:%M:%S')
-            
-            # Calculate Host Time & UTC Time
             host_tz_name = host_user.tz or 'UTC'
-            host_tz = pytz.timezone(host_tz_name)
+            pretty_time_str = f"{dt_naive.strftime('%A, %d %b %Y - %H:%M')} ({host_tz_name})"
             
-            # Make timezone-aware (Local)
-            local_aware = host_tz.localize(dt_naive)
-            # Convert to UTC
-            utc_aware = local_aware.astimezone(pytz.utc)
-
-            # Format: "Tuesday, 10 Feb 2026 — 09:00 (Asia/Makassar) / 01:00 UTC"
-            time_host_str = local_aware.strftime('%H:%M')
-            time_utc_str = utc_aware.strftime('%H:%M')
-            date_str = local_aware.strftime('%A, %d %b %Y')
-            
-            display_str = f"{date_str} — {time_host_str} ({host_tz_name}) / {time_utc_str} UTC"
-            
-            return request.render('meeting_rooms.portal_booking_form_template', {
+            return request.render('meeting_rooms_2.portal_booking_form_template', {
                 'host': host_user,
                 'token': token,
                 'time_str': time_str, 
-                'display_time': display_str,
+                'display_time': pretty_time_str,
                 'default_name': request.env.user.name if not request.env.user._is_public() else '',
                 'default_email': request.env.user.email if not request.env.user._is_public() else '',
             })
         except Exception as e:
-            return f"Error parsing schedule: {str(e)}"
+            return f"Error: {str(e)}"
 
     # =========================================================================
     # 3. Submit booking (SECURITY: Honeypot + Rate Limiting)
@@ -185,17 +161,12 @@ class BookingPortal(http.Controller):
     @http.route('/booking/submit', type='http', auth='public', website=True, csrf=True)
     def booking_submit(self, token, time_str, **kw):
         # --- SECURITY LAYER 1: HONEYPOT (Anti-Bot Detection) ---
-        # Bots automatically fill ALL form fields including hidden ones.
-        # We create a hidden field 'website_url' that humans won't see.
-        # If it's filled, it's definitely a bot.
         if kw.get('website_url'):
             client_ip = request.httprequest.remote_addr
             _logger.warning(f"SECURITY: Bot detected (Honeypot triggered) from IP {client_ip}")
             return "Error: Invalid Request (Bot Detected)"
 
         # --- SECURITY LAYER 2: RATE LIMITING (Anti-Spam) ---
-        # Prevent same user/browser from spamming submit button repeatedly.
-        # Rate limit: 1 booking per 60 seconds per session
         last_submit = request.session.get('last_booking_submit')
         if last_submit:
             last_time = datetime.fromtimestamp(last_submit)
@@ -204,10 +175,11 @@ class BookingPortal(http.Controller):
                 _logger.warning(f"SECURITY: Rate limit exceeded. {60 - int(time_since_last)}s remaining")
                 return f"Too many requests. Please wait {60 - int(time_since_last)} seconds before booking again."
         
-        # Update timestamp of last successful submission
         request.session['last_booking_submit'] = datetime.now().timestamp()
 
-        # --- MAIN LOGIC (Same as before) ---
+        _logger.info(f"\n\n=== [DEBUG START] SUBMITTING BOOKING (SECURITY ENABLED) ===")
+        _logger.info(f"RECEIVED TIME STRING: {time_str}")
+
         link_obj = request.env['meeting.booking.link'].sudo().search([
             ('token', '=', token),
             ('active', '=', True)
@@ -216,32 +188,37 @@ class BookingPortal(http.Controller):
         if not link_obj: return "Link Not Found"
 
         host_user = link_obj.user_id
-        if not host_user.tz: return "Host Timezone missing."
+        _logger.info(f"HOST: {host_user.name} | TZ: {host_user.tz}")
 
-        # TIMEZONE CONVERSION LOGIC
+        if not host_user.tz:
+            return "Host Timezone missing."
+
+        # === TIMEZONE DIAGNOSIS ===
         try:
-            # Parse local time string (Host timezone time)
-            local_dt_naive = datetime.strptime(time_str.strip(), '%Y-%m-%d %H:%M:%S')
+            # 1. Parse time string (Assumed to be HOST LOCAL TIME)
+            # Example: "2026-02-06 09:00:00"
+            local_naive = datetime.strptime(time_str.strip(), '%Y-%m-%d %H:%M:%S')
+            _logger.info(f"STEP 1 - PARSED RAW: {local_naive}")
             
-            # Make timezone-aware with host timezone
+            # 2. Add Host Timezone
             host_tz = pytz.timezone(host_user.tz)
-            local_dt_aware = host_tz.localize(local_dt_naive)
+            local_aware = host_tz.localize(local_naive)
+            _logger.info(f"STEP 2 - HOST AWARE: {local_aware}")
             
-            # Convert to UTC (what goes into database)
-            utc_dt_aware = local_dt_aware.astimezone(pytz.utc)
+            # 3. Convert to UTC (This is what goes to DB)
+            utc_aware = local_aware.astimezone(pytz.utc)
+            _logger.info(f"STEP 3 - CONVERTED TO UTC: {utc_aware}")
             
-            # Remove tzinfo for database storage
-            start_dt_db = utc_dt_aware.replace(tzinfo=None)
+            # 4. Remove timezone info so Odoo accepts it (Naive UTC)
+            start_dt_db = utc_aware.replace(tzinfo=None)
             end_dt_db = start_dt_db + timedelta(hours=1)
-            
-            # SAFE LOGGING: Only general info, NO sensitive data (passwords/tokens)
-            client_ip = request.httprequest.remote_addr
-            _logger.info(f"BOOKING SECURED: User '{kw.get('name')}' | IP {client_ip} | Time {start_dt_db} UTC")
+            _logger.info(f"STEP 4 - FINAL DB VALUE (NAIVE UTC): {start_dt_db}")
             
         except ValueError as e:
+            _logger.error(f"TIME PARSING ERROR: {e}")
             return f"Invalid time format: {e}"
 
-        # Validate Email
+        # Validasi Email dll
         name = kw.get('name', 'Guest')
         email_input = (kw.get('email') or '').strip()
         email_list = [e.strip() for e in re.split(r'[;\n,]+', email_input) if e.strip()]
@@ -253,13 +230,9 @@ class BookingPortal(http.Controller):
         Partner = request.env['res.partner'].sudo()
         guest_partner = Partner.search([('email', '=', email_list[0])], limit=1)
         if not guest_partner:
-            guest_partner = Partner.create({
-                'name': name, 
-                'email': email_list[0], 
-                'type': 'contact'
-            })
+            guest_partner = Partner.create({'name': name, 'email': email_list[0], 'type': 'contact'})
 
-        # Check for Conflict (Simple DB query)
+        # Check Conflict
         domain = [
             ('start_date', '<', end_dt_db),
             ('end_date', '>', start_dt_db),
@@ -267,9 +240,12 @@ class BookingPortal(http.Controller):
             ('state', '=', 'confirm')
         ]
         if request.env['meeting.event'].sudo().search_count(domain) > 0:
-            return "Sorry, this time slot has just been booked."
+             _logger.warning("CONFLICT DETECTED")
+             return "Slot already booked."
 
-        # Create Event
+        # === CREATE EVENT ===
+        _logger.info("CREATING RECORD IN ODOO...")
+        # Important: with_context(tz='UTC') prevents Odoo from shifting time again
         new_event = request.env['meeting.event'].sudo().with_context(tz='UTC').create({
             'subject': final_subject,
             'start_date': start_dt_db, 
@@ -280,12 +256,11 @@ class BookingPortal(http.Controller):
             'guest_partner_id': guest_partner.id,
             'guest_emails': ", ".join(email_list),
         })
+        _logger.info(f"RECORD CREATED ID: {new_event.id}")
+        _logger.info("=== [DEBUG END] SUBMIT COMPLETE (SECURITY PASSED) ===\n")
 
-        # Success Display
-        time_host_str = local_dt_aware.strftime('%H:%M')
-        time_utc_str = utc_dt_aware.strftime('%H:%M')
-        date_str = local_dt_aware.strftime('%A, %d %b %Y')
-        display_time = f"{date_str} — {time_host_str} ({host_user.tz}) / {time_utc_str} UTC"
+        # Success Page
+        display_time = local_naive.strftime('%A, %d %b %H:%M') + f" ({host_user.tz})"
 
         return f"""
             <div style='display:flex; justify-content:center; align-items:center; height:100vh; background-color:#f3f4f6; font-family:sans-serif;'>

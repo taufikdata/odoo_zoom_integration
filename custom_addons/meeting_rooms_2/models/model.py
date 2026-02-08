@@ -68,13 +68,6 @@ class MeetingRooms(models.Model):
     
     virtual_room_id = fields.Many2one('virtual.room', string="Virtual Room")
 
-    # === FIELDS FOR MULTI-TIMEZONE DISPLAY ===
-    multi_timezone_display = fields.Html(
-        related='meeting_event_id.multi_timezone_display', 
-        string="Timezone Details", 
-        readonly=True
-    )
-
     # =========================================================================
     # Security functions (access control)
     # =========================================================================
@@ -96,11 +89,8 @@ class MeetingRooms(models.Model):
 
     def _get_display_tz_name(self):
         self.ensure_one()
-        event = getattr(self, 'meeting_event_id', False)
-        if event and event.host_user_id and event.host_user_id.tz:
-            return event.host_user_id.tz
-        if self.create_uid and self.create_uid.tz:
-            return self.create_uid.tz
+        if self.room_location and self.room_location.tz:
+            return self.room_location.tz
         return 'UTC'
 
     def _convert_utc_to_tz(self, dt, tz_name):
@@ -122,10 +112,6 @@ class MeetingRooms(models.Model):
         return f"{'+' if offset_hours >= 0 else '-'}{abs(offset_hours):02d}{abs(offset_minutes):02d}"
 
     def send_email_meeting(self):
-        self.ensure_one()
-        event = getattr(self, 'meeting_event_id', False)
-        if event:
-            return event.create_calendar_web()
         for rec in self :
             tz_name = rec._get_display_tz_name()
             start_time = rec._convert_utc_to_tz(rec.start_date, tz_name)
@@ -274,10 +260,6 @@ END:VCALENDAR`;
             self.create_calendar_event()
 
     def create_calendar_web(self):
-        self.ensure_one()
-        event = getattr(self, 'meeting_event_id', False)
-        if event:
-            return event.create_calendar_web()
         return {
             'name': "Create Calendar",
             'type': 'ir.actions.act_url',
@@ -293,7 +275,7 @@ END:VCALENDAR`;
     def action_cancel(self):
         """Cancel meeting room booking with security check."""
         # === SECURITY CHECK FIRST ===
-        is_manager = self.env.user.has_group('meeting_rooms.group_meeting_manager')
+        is_manager = self.env.user.has_group('meeting_rooms_2.group_meeting_manager')
         for rec in self:
             if rec.create_uid != self.env.user and not is_manager:
                 raise UserError(_(
@@ -307,7 +289,7 @@ END:VCALENDAR`;
             tz_name = rec._get_display_tz_name()
             start_time = rec._convert_utc_to_tz(rec.start_date, tz_name)
             end_time = rec._convert_utc_to_tz(rec.end_date, tz_name)
-            rec.activity_feedback(['meeting_rooms.mail_act_meeting_rooms_approval'])
+            rec.activity_feedback(['meeting_rooms_2.mail_act_meeting_rooms_approval'])
             group = []
             for user in rec.attendee :
                 group.append(user.partner_id.id)
@@ -326,7 +308,7 @@ END:VCALENDAR`;
 
     def unlink(self):
         self._check_readonly_access()
-        is_manager = self.env.user.has_group('meeting_rooms.group_meeting_manager')
+        is_manager = self.env.user.has_group('meeting_rooms_2.group_meeting_manager')
         if self.create_uid != self.env.user and not is_manager:
             raise UserError(_(f"Only the creator ({self.create_uid.name}) or a Meeting Administrator can delete this record."))
         return super(MeetingRooms, self).unlink()
@@ -445,26 +427,13 @@ END:VCALENDAR`;
 
     def write(self, vals):
         """Override write to enforce readonly access control."""
-        # 1. If System/Sudo, Bypass all checks
-        if self.env.su:
-            return super(MeetingRooms, self).write(vals)
-
-        # 2. Check Readonly Context
         self._check_readonly_access()
         if self.env.context.get('force_sync'):
             return super(MeetingRooms, self).write(vals)
 
-        # 3. Check Manual Permission
-        is_manager = self.env.user.has_group('meeting_rooms.group_meeting_manager')
-        
-        # REVISED: Also check if user is the HOST in the parent event
-        is_host = False
-        for rec in self:
-            if rec.meeting_event_id and rec.meeting_event_id.host_user_id == self.env.user:
-                is_host = True
-                break
+        is_manager = self.env.user.has_group('meeting_rooms_2.group_meeting_manager')
 
-        if self.create_uid != self.env.user and not is_manager and not is_host:
-            raise UserError(_(f"Only the creator ({self.create_uid.name}), Host, or Meeting Administrator can edit this record."))
+        if self.create_uid != self.env.user and not is_manager:
+            raise UserError(_(f"Only the creator ({self.create_uid.name}) or a Meeting Administrator can edit this record."))
         else:
             return super(MeetingRooms, self).write(vals)

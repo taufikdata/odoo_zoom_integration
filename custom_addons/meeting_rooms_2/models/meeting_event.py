@@ -117,26 +117,6 @@ class MeetingEvent(models.Model):
         readonly=True 
     )
 
-    # === FIELD FOR MULTI-TIMEZONE DISPLAY ===
-    multi_timezone_display = fields.Html(
-        string="Timezone Details", 
-        compute='_compute_multi_timezone_display', 
-        store=True,
-        help="Display list of local times for each selected room."
-    )
-
-    # Computed fields: Display dates in UTC
-    start_date_utc_str = fields.Char(
-        string="Start (UTC)",
-        compute='_compute_utc_date_strings',
-        help="Start date/time in UTC timezone"
-    )
-    end_date_utc_str = fields.Char(
-        string="End (UTC)",
-        compute='_compute_utc_date_strings',
-        help="End date/time in UTC timezone"
-    )
-
     # ==========================================================
     # Helper: Compute local times (eliminate code duplication)
     # ==========================================================
@@ -158,20 +138,16 @@ class MeetingEvent(models.Model):
         self.ensure_one()
         
         if not tz_name:
-            tz_name = (self.host_user_id.tz or self.create_uid.tz or 'UTC')
+            if self.room_location_ids:
+                tz_name = self.room_location_ids[0].tz or 'UTC'
+            else:
+                tz_name = (self.host_user_id.tz or self.create_uid.tz or 'UTC')
         
         tz = pytz.timezone(tz_name)
         
         # ✅ CORRECT: Convert the MEETING datetime to its timezone (handles DST correctly)
-        start_dt = self.start_date
-        end_dt = self.end_date
-        if start_dt and start_dt.tzinfo is None:
-            start_dt = pytz.utc.localize(start_dt)
-        if end_dt and end_dt.tzinfo is None:
-            end_dt = pytz.utc.localize(end_dt)
-
-        local_start = start_dt.astimezone(tz)
-        local_end = end_dt.astimezone(tz)
+        local_start = self.start_date.astimezone(tz)
+        local_end = self.end_date.astimezone(tz)
         
         # Format strings
         formatted_date = local_start.strftime('%b %d, %Y')
@@ -196,110 +172,6 @@ class MeetingEvent(models.Model):
             'tz_offset_str': tz_offset_str,
         }
 
-    @api.depends('start_date', 'end_date')
-    def _compute_utc_date_strings(self):
-        """
-        Display start and end dates in UTC timezone for reference.
-        
-        This helps users see the actual UTC values stored in database,
-        useful for cross-timezone coordination.
-        """
-        for rec in self:
-            if rec.start_date:
-                start_dt = rec.start_date
-                if isinstance(start_dt, str):
-                    start_dt = fields.Datetime.to_datetime(start_dt)
-                if start_dt.tzinfo is None:
-                    start_dt = pytz.utc.localize(start_dt)
-                rec.start_date_utc_str = start_dt.strftime('%Y-%m-%d %H:%M:%S UTC')
-            else:
-                rec.start_date_utc_str = ''
-
-            if rec.end_date:
-                end_dt = rec.end_date
-                if isinstance(end_dt, str):
-                    end_dt = fields.Datetime.to_datetime(end_dt)
-                if end_dt.tzinfo is None:
-                    end_dt = pytz.utc.localize(end_dt)
-                rec.end_date_utc_str = end_dt.strftime('%Y-%m-%d %H:%M:%S UTC')
-            else:
-                rec.end_date_utc_str = ''
-
-    @api.depends('start_date', 'end_date', 'room_location_ids', 'host_user_id', 'virtual_room_id', 'zoom_link')
-    def _compute_multi_timezone_display(self):
-        """
-        Generate HTML table showing local times for each selected room and virtual meeting.
-        
-        This computed field creates a visual timezone breakdown that can be displayed in:
-        - Form views (meeting_event, meeting.rooms)
-        - Activity notifications
-        
-        The table shows:
-        - Physical room locations with their local timezones
-        - Virtual meeting platforms (Zoom, etc.) using host timezone
-        """
-        for rec in self:
-            if not rec.start_date or not rec.end_date:
-                rec.multi_timezone_display = False
-                continue
-
-            html = """
-            <table style="width:100%; font-size:13px; color:#444; border:1px solid #eee; background-color:#f9f9f9;">
-                <tr style="background-color:#efefef;">
-                    <th style="padding:5px; text-align:left;">Location</th>
-                    <th style="padding:5px; text-align:left;">Local Time</th>
-                </tr>
-            """
-            
-            # Helper function for timezone conversion
-            def get_time_str(dt, tz_name):
-                """Convert datetime to local time string in given timezone."""
-                tz = pytz.timezone(tz_name)
-                utc_dt = pytz.utc.localize(dt) if dt.tzinfo is None else dt
-                local_dt = utc_dt.astimezone(tz)
-                return local_dt.strftime('%H:%M')
-
-            # 1. Loop Physical Rooms
-            if rec.room_location_ids:
-                for room in rec.room_location_ids:
-                    # Determine Room Timezone
-                    r_tz = room.tz or rec.host_user_id.tz or 'UTC'
-                    
-                    start_str = get_time_str(rec.start_date, r_tz)
-                    end_str = get_time_str(rec.end_date, r_tz)
-                    
-                    html += f"""
-                    <tr>
-                        <td style="padding:5px; border-bottom:1px solid #eee;">🏢 {room.name}</td>
-                        <td style="padding:5px; border-bottom:1px solid #eee;">
-                            <b>{start_str} - {end_str}</b> <span style="color:#888; font-size:11px;">({r_tz})</span>
-                        </td>
-                    </tr>
-                    """
-            
-            # 2. Add Virtual Room Row (If link exists)
-            if rec.zoom_link or rec.virtual_room_id:
-                # Virtual follows Host
-                h_tz = rec.host_user_id.tz or 'UTC'
-                start_str = get_time_str(rec.start_date, h_tz)
-                end_str = get_time_str(rec.end_date, h_tz)
-                
-                provider_name = "Online Meeting"
-                if rec.virtual_room_id:
-                    provider_name = dict(rec.virtual_room_id._fields['provider'].selection).get(rec.virtual_room_id.provider, "Virtual")
-
-                html += f"""
-                <tr>
-                    <td style="padding:5px; border-bottom:1px solid #eee;">🎥 {provider_name} (Host)</td>
-                    <td style="padding:5px; border-bottom:1px solid #eee;">
-                        <b>{start_str} - {end_str}</b> <span style="color:#888; font-size:11px;">({h_tz})</span>
-                    </td>
-                </tr>
-                """
-
-            html += "</table>"
-            rec.multi_timezone_display = html
-
     # ==========================================================
     # LOGIC: REGENERATE ACTIVITY
     # ==========================================================
@@ -321,7 +193,7 @@ class MeetingEvent(models.Model):
         if self.env.context.get('mail_activity_automation_skip'):
             return
 
-        # 1. DELETE OLD ACTIVITIES
+        # 1. WIPE OLD ACTIVITIES
         old_activities = self.env['mail.activity'].search([
             ('res_id', '=', ev.id),
             ('res_model', '=', 'meeting.event')
@@ -351,80 +223,40 @@ class MeetingEvent(models.Model):
 
         # 3. REGENERATE
         for user in ev.attendee:
-            # Generate note with timezone table
-            activity_note = f"""
-                <p>Hi <b>{user.name}</b>,</p>
-                <p>I hope this message finds you well. <b>{ev.create_uid.name}</b> has invited you to the "{ev.subject}" meeting</p>
-                
-                <p><b>Schedule Details:</b></p>
-                <table border="0" style="margin-bottom: 10px;">
-                    <tbody>
-                        <tr>
-                            <td style="width:80px;">Date</td>
-                            <td>: {formatted_start_time}</td>
-                        </tr>
-                        <tr>
-                            <td>Time</td>
-                            <td>: {start_time_hours} - {end_time_hours} ({tz_name})</td>
-                        </tr>
-                         <tr>
-                            <td>Time (UTC)</td>
-                            <td>: {ev.start_date} - {ev.end_date}</td>
-                        </tr>
-                        <tr>
-                            <td>Duration</td>
-                            <td>: {meeting_hours_str}{meeting_minutes_str}</td>
-                        </tr>
-                        <tr>
-                            <td>Location</td>
-                            <td>: {loc_name} {virtual_room_info}</td>
-                        </tr>
-                    </tbody>
-                </table>
-                
-                <p><b>Timezone Breakdown:</b></p>
-                {ev.multi_timezone_display}
-            """
-            
-            if ev.zoom_link:
-                activity_note += f"<p><a href='{ev.zoom_link}' style='background:#00A09D; color:white; padding:5px 10px; text-decoration:none; border-radius:4px;'>Join Meeting</a></p>"
-
-            activity_note += "<br/>"
-            
-            ev.sudo().activity_schedule(
-                'meeting_rooms.mail_act_meeting_rooms_approval',
+              ev.sudo().activity_schedule(
+                'meeting_rooms_2.mail_act_meeting_rooms_approval',
                 user_id=user.id,
                 date_deadline=local_times['local_start'].date(),
-                note=activity_note
+                note=f"""
+                    Hi <b>{user.name}</b>,<br/><br/>
+                    I hope this message finds you well. <b>{ev.create_uid.name}</b> has invited you to the "{ev.subject}" meeting<br/><br/>
+                    <table border="0">
+                        <tbody>
+                            <tr>
+                                <td style="width:80px;">Date</td>
+                                <td>: {formatted_start_time}</td>
+                            </tr>
+                            <tr>
+                                <td>Time</td>
+                                <td>: {start_time_hours} - {end_time_hours} ({tz_name})</td>
+                            </tr>
+                             <tr>
+                                <td>Time (UTC)</td>
+                                <td>: {ev.start_date} - {ev.end_date}</td>
+                            </tr>
+                            <tr>
+                                <td>Duration</td>
+                                <td>: {meeting_hours_str}{meeting_minutes_str}</td>
+                            </tr>
+                            <tr>
+                                <td>Location</td>
+                                <td>: {loc_name} {virtual_room_info}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <br/>
+                """
             )
-
-    def _can_shared_action(self):
-        """Allow actions for admin, creator, or host only."""
-        self.ensure_one()
-        user = self.env.user
-        
-        from .constants import GroupNames
-        
-        # LOGGING DEBUG (No PII - only log IDs, not names)
-        _logger.info(f"Permission check - User ID: {user.id}, Creator ID: {self.create_uid.id}, Host ID: {self.host_user_id.id if self.host_user_id else None}")
-
-        # 1. Admin selalu boleh
-        if user.has_group(GroupNames.MEETING_MANAGER):
-            _logger.info(f"Permission approved: User {user.id} is admin")
-            return True
-            
-        # 2. Creator boleh
-        if self.create_uid == user:
-            _logger.info(f"Permission approved: User {user.id} is creator")
-            return True
-            
-        # 3. Host boleh
-        if self.host_user_id == user:
-            _logger.info(f"Permission approved: User {user.id} is host")
-            return True
-            
-        _logger.warning(f"Permission denied: User {user.id} is not admin/creator/host")
-        return False
 
     # ==========================
     # OVERRIDE UNLINK (PERMANENT DELETE)
@@ -434,33 +266,21 @@ class MeetingEvent(models.Model):
         Ensure that when user deletes an Event from database,
         the corresponding Zoom meeting is also deleted from Zoom server.
         """
-        # 1. CHECK SUPERUSER (Sudo)
-        if self.env.su:
-            # Sudo can delete anything, but still need to handle Zoom cleanup
-            for rec in self:
-                if rec.zoom_id and rec.virtual_room_id and rec.virtual_room_id.provider == 'zoom':
-                    try:
-                        rec.sudo()._logic_delete_zoom_meeting(rec.zoom_id, context_room=rec.virtual_room_id)
-                    except Exception as e:
-                        _logger.warning(f"Failed to delete Zoom on Unlink: {str(e)}")
-            return super(MeetingEvent, self).unlink()
-
-        # 2. CHECK PERMISSION FOR REGULAR USERS
-        is_manager = self.env.user.has_group('meeting_rooms.group_meeting_manager')
-        
+        # === SECURITY PRE-CHECK ===
+        # Manually check if user has permission to delete.
+        # If not, raise error BEFORE touching Zoom API.
+        is_manager = self.env.user.has_group('meeting_rooms_2.group_meeting_manager')
         for rec in self:
-            # User can DELETE IF: Admin OR Creator OR Host
-            is_owner = (rec.create_uid == self.env.user) or (rec.host_user_id == self.env.user)
-            
-            if not is_manager and not is_owner:
-                raise UserError(_("ACCESS DENIED: You can only delete meetings where you are the Host or Creator."))
+            if rec.create_uid != self.env.user and not is_manager:
+                raise UserError(_("Access Denied: You can only delete your own meetings."))
+        # ==========================================
 
-        # 3. PROCESS ZOOM DELETION
+        # If security check passes, proceed with Zoom deletion
         for rec in self:
             if rec.zoom_id and rec.virtual_room_id and rec.virtual_room_id.provider == 'zoom':
                 try:
-                    # Use sudo() to read credentials if user access is limited
-                    rec.sudo()._logic_delete_zoom_meeting(rec.zoom_id, context_room=rec.virtual_room_id)
+                    # Pass the current virtual room to ensure credentials are found
+                    rec._logic_delete_zoom_meeting(rec.zoom_id, context_room=rec.virtual_room_id)
                 except Exception as e:
                     _logger.warning(f"Failed to delete Zoom on Unlink: {str(e)}")
         
@@ -468,7 +288,7 @@ class MeetingEvent(models.Model):
         return super(MeetingEvent, self).unlink()
 
     # ==========================
-    # WRITE / EDIT LOGIC (TRANSACTION-SAFE)
+    # Write / edit logic (transaction-safe)
     # ==========================
     def write(self, vals):
         """
@@ -489,93 +309,14 @@ class MeetingEvent(models.Model):
         Context:
             skip_rooms_sync: Skip automatic meeting.rooms synchronization
         """
-        vals = dict(vals)
-        
-        # 1. CHECK SUPERUSER (Sudo)
-        # If called with .sudo(), self.env.su will be True.
-        # Bypass all permission checks so action_confirm can run.
-        if self.env.su:
-            return super(MeetingEvent, self).write(vals)
-
-        # 2. CHECK PERMISSION FOR REGULAR USERS
-        # User must be Admin OR Creator OR Host to edit meeting
-        is_manager = self.env.user.has_group('meeting_rooms.group_meeting_manager')
-        
-        for rec in self:
-            # User can EDIT IF: Admin OR Creator OR Host
-            is_owner = (rec.create_uid == self.env.user) or (rec.host_user_id == self.env.user)
-            
-            if not is_manager and not is_owner:
-                raise UserError(_("ACCESS DENIED: You cannot edit this meeting because you are not the Host or Creator."))
-        
-        # 3. PROCESS MEETING EDIT (Extended logic for allowed field editing)
-        use_sudo_write = False
-
-        # If user is not manager & not owner, don't continue
-        # (Already blocked above, but as extra safety)
-        if not is_manager and not is_owner:
-            if not self.env.user.has_group('base.group_user'):
-                raise UserError(_("You are not allowed to edit this meeting."))
-
-            # Drop unchanged protected fields commonly sent by the form.
-            blocked_fields = {
-                'start_date',
-                'end_date',
-                'state',
-                'meeting_room_ids',
-                'zoom_id',
-                'zoom_link',
-                'zoom_start_url',
-                'zoom_invitation',
-                'ai_summary',
-                'create_uid',
-                'create_date',
-                'write_date',
-                'host_user_id',
-            }
-            for field_name in list(blocked_fields):
-                if field_name in vals:
-                    new_val = vals[field_name]
-                    if field_name in {'start_date', 'end_date'}:
-                        new_val = fields.Datetime.to_datetime(new_val)
-                        if any(fields.Datetime.to_datetime(getattr(rec, field_name)) != new_val for rec in self):
-                            raise UserError(_(
-                                "You can only update meeting details (location, attendees, and description). "
-                                "Start/end time, cancel, and delete are restricted to host or administrator."
-                            ))
-                    vals.pop(field_name, None)
-
-            allowed_fields = {
-                'subject',
-                'description',
-                'room_location_ids',
-                'virtual_room_id',
-                'attendee',
-                'calendar_alarm',
-                'guest_partner_id',
-                'guest_emails',
-                'recurrency',
-                'rrule_type',
-                'final_date',
-            }
-            extra_fields = set(vals.keys()) - allowed_fields
-            if extra_fields:
-                raise UserError(_(
-                    "You can only update meeting details (location, attendees, and description). "
-                    "Start/end time, cancel, and delete are restricted to host or administrator."
-                ))
-
-            use_sudo_write = True
-
         reschedule_fields = ['start_date', 'end_date', 'virtual_room_id']
         is_rescheduling = any(f in vals for f in reschedule_fields)
 
         # 1. Prepare to delete (BUT WAIT)
         zoom_meetings_to_delete = {}
-        work = self.sudo() if use_sudo_write else self
         
         if is_rescheduling:
-            for rec in work:
+            for rec in self:
                 if rec.zoom_id and rec.virtual_room_id and rec.virtual_room_id.provider == 'zoom':
                     # Store ID and the Record Object of the Virtual Room
                     zoom_meetings_to_delete[rec.id] = {
@@ -594,25 +335,25 @@ class MeetingEvent(models.Model):
         is_update_needed = is_rescheduling or any(f in vals for f in trigger_fields)
         
         # 2. COMMIT TO DB (This might raise Validation Error if clash)
-        res = super(MeetingEvent, work).write(vals)
+        res = super(MeetingEvent, self).write(vals)
 
         # 3. IF SUCCESS, DELETE ZOOM USING OLD CREDENTIALS
         if is_rescheduling:
             # Invalidate cache to ensure zoom fields are properly cleared
-            work.invalidate_cache(['zoom_id', 'zoom_link', 'zoom_start_url', 'zoom_invitation', 'ai_summary'])
+            self.invalidate_cache(['zoom_id', 'zoom_link', 'zoom_start_url', 'zoom_invitation', 'ai_summary'])
             
-            for rec in work:
+            for rec in self:
                 old_data = zoom_meetings_to_delete.get(rec.id)
                 if old_data:
                     # Pass the OLD room record to the delete logic
                     rec._logic_delete_zoom_meeting(old_data['id'], context_room=old_data['room'])
             
-            for ev in work:
+            for ev in self:
                 if ev.state == 'confirm':
                     ev.message_post(body="<b>Schedule Changed.</b> Old meeting link has been deleted. Please click 'Generate Meeting Link' again.")
 
         # 4. Sync Rooms (Updates timestamps, freeing old slots)
-        for ev in work:
+        for ev in self:
             if not self.env.context.get('skip_rooms_sync'):
                 ev._sync_rooms_from_event()
 
@@ -622,7 +363,7 @@ class MeetingEvent(models.Model):
         return res
 
     # ==========================
-    # ACTION CONFIRM (FINAL FIX UI REFRESH)
+    # ACTION CONFIRM
     # ==========================
     def action_confirm(self):
         """
@@ -632,59 +373,11 @@ class MeetingEvent(models.Model):
         1. Regenerates activity notifications for all attendees
         2. Changes state to 'confirm'
         3. Synchronizes meeting.rooms records
-        4. Force reload form view to display updated status
         """
-        # INITIAL LOGGING
-        _logger.info(f"Confirm action initiated by user {self.env.user.id}")
-
-        target_id = None
         for ev in self:
-            # 1. Check Permission
-            if not ev._can_shared_action():
-                _logger.error(f"Permission denied for user {self.env.user.id} on meeting {ev.id}")
-                raise UserError(_("You are not authorized to confirm this meeting. You must be the Host or Creator."))
-
-            # 2. Determine Target Write (Bypass Rule if needed)
-            # If user is Host but not Creator, they need SUDO to write status
-            target = ev
-            if ev.create_uid != self.env.user and not self.env.user.has_group('meeting_rooms.group_meeting_manager'):
-                _logger.info(f"Using sudo for user {self.env.user.id} to confirm meeting {ev.id}")
-                target = ev.sudo()
-
-            try:
-                _logger.info(f"Step 1: Regenerating activities for meeting {ev.id}")
-                target._regenerate_all_activities()
-                
-                _logger.info(f"Step 2: Writing state confirm for meeting {ev.id}")
-                target.write({'state': 'confirm'})
-                
-                _logger.info(f"Step 3: Syncing rooms for meeting {ev.id}")
-                from .constants import ContextKey
-                target.with_context(**{ContextKey.SKIP_BOOKING_CHECK: True})._sync_rooms_from_event()
-                
-                _logger.info(f"SUCCESS: Meeting {ev.id} confirmed by user {self.env.user.id}")
-                target_id = ev.id
-                
-            except ValidationError:
-                raise  # Re-raise validation errors as-is
-            except UserError:
-                raise  # Re-raise user errors as-is
-            except Exception as e:
-                _logger.error(f"Error during confirmation process for meeting {ev.id}: {str(e)}", exc_info=True)
-                error_msg = str(e).replace("\\n", "\n")
-                raise UserError(_(f"A system error occurred during meeting confirmation:\n\n{error_msg}"))
-            
-        # 4. FORCE REFRESH FORM VIEW
-        # Reload form with latest database data to update status bar
-        if target_id:
-            return {
-                'type': 'ir.actions.act_window',
-                'view_mode': 'form',
-                'res_model': 'meeting.event',
-                'res_id': target_id,
-                'target': 'current',
-                'flags': {'mode': 'readonly'},
-            }
+            ev._regenerate_all_activities()
+            ev.write({'state': 'confirm'})
+            ev.with_context(skip_booking_check=True)._sync_rooms_from_event()
         return True
 
     # ==========================================================
@@ -694,66 +387,31 @@ class MeetingEvent(models.Model):
     def _get_zoom_supported_timezone(self, tz_name=None):
         """
         Convert user timezone to Zoom-supported timezone.
-        Uses 2 methods:
-        1. Manual Mapping (For special cases like Indonesia).
-        2. Smart Offset Matching (Find major city with same offset).
-        """
-        # 1. Determine Source Timezone
-        if not tz_name:
-            tz_name = (self.host_user_id.tz or self.create_uid.tz or 'UTC')
         
-        # 2. METHOD A: Manual Mapping (Primary - For special regions)
-        mapping = {
-            'Asia/Makassar': 'Asia/Singapore',      
-            'Asia/Ujung_Pandang': 'Asia/Singapore', 
-            'Asia/Jakarta': 'Asia/Bangkok',         
-            'Asia/Pontianak': 'Asia/Bangkok',       
-            'Asia/Jayapura': 'Asia/Tokyo',          
-        }
+        Zoom API doesn't support all pytz timezone names, so we map
+        unsupported Indonesian timezones to their supported equivalents.
         
-        if tz_name in mapping:
-            final_tz = mapping[tz_name]
-            _logger.info(f"ZOOM TZ (Manual): {tz_name} -> {final_tz}")
-            return final_tz
-
-        # 3. METHOD B: Smart Offset Matching (For users outside mapping)
-        # If user timezone not in mapping, check if Zoom supports it natively?
-        # For safety, we find a "major city" with same offset.
-        
-        try:
-            user_tz = pytz.timezone(tz_name)
-            # Calculate current user offset (e.g.: +01:00)
-            user_now = datetime.now(user_tz)
-            user_offset = user_now.utcoffset()
-
-            # List of "safe major cities" definitely supported by Zoom (Representative)
-            safe_zones = [
-                'UTC',
-                'Asia/Singapore', 'Asia/Bangkok', 'Asia/Tokyo', 'Asia/Seoul', 'Asia/Dubai', 'Asia/Kolkata',
-                'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Europe/Moscow',
-                'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles', 'America/Sao_Paulo',
-                'Australia/Sydney', 'Pacific/Auckland'
-            ]
-
-            # Check one-by-one for matching offset with User
-            for safe_name in safe_zones:
-                safe_tz = pytz.timezone(safe_name)
-                safe_now = datetime.now(safe_tz)
-                safe_offset = safe_now.utcoffset()
-
-                # If offset matches exactly (daylight saving differences ignored)
-                if user_offset == safe_offset:
-                    _logger.info(f"ZOOM TZ (Smart Match): {tz_name} -> {safe_name} (Same Offset)")
-                    return safe_name
+        Args:
+            tz_name: Timezone name to convert (if None, uses creator timezone)
             
-            # If no match found, return original (hope Zoom supports it)
-            # or default to UTC for safety and avoid errors.
-            _logger.warning(f"ZOOM TZ: No match found for {tz_name}, defaulting to UTC")
-            return 'UTC'
-
-        except Exception as e:
-            _logger.error(f"ZOOM TZ Error: {e}")
-            return 'UTC'
+        Returns:
+            Zoom-compatible timezone string
+        """
+        if not tz_name:
+            if self.room_location_ids:
+                tz_name = self.room_location_ids[0].tz or 'UTC'
+            else:
+                tz_name = (self.host_user_id.tz or self.create_uid.tz or 'UTC')
+        
+        # Map unsupported Indonesian timezones to Zoom-supported ones
+        mapping = {
+            'Asia/Makassar': 'Asia/Singapore', 
+            'Asia/Ujung_Pandang': 'Asia/Singapore', 
+            'Asia/Jakarta': 'Asia/Bangkok', 
+            'Asia/Pontianak': 'Asia/Bangkok', 
+            'Asia/Jayapura': 'Asia/Tokyo',
+        }
+        return mapping.get(tz_name, tz_name)
 
     def _logic_delete_zoom_meeting(self, meeting_id, context_room=None):
         """
@@ -787,23 +445,19 @@ class MeetingEvent(models.Model):
             UserError: If no virtual room is selected
         """
         self.ensure_one()
-        if not self._can_shared_action():
-            raise UserError(_("You are not allowed to generate meeting links."))
-
-        target = self if (self.create_uid == self.env.user or self.env.user.has_group('meeting_rooms.group_meeting_manager')) else self.sudo()
-        if not target.virtual_room_id:
+        if not self.virtual_room_id:
             raise UserError(_("Please select a Virtual Room first."))
         
-        provider = getattr(target.virtual_room_id, 'provider', 'zoom')
+        provider = getattr(self.virtual_room_id, 'provider', 'zoom')
         
         if provider == 'zoom':
-            target._logic_generate_zoom()
+            self._logic_generate_zoom()
         elif provider == 'google_meet':
-            target._logic_generate_google_meet()
+            self._logic_generate_google_meet()
         elif provider == 'teams':
-            target._logic_generate_teams()
+            self._logic_generate_teams()
         else:
-            target._logic_generate_manual_link()
+            self._logic_generate_manual_link()
 
     def _get_zoom_credentials(self, context_room=None):
         """
@@ -896,7 +550,10 @@ class MeetingEvent(models.Model):
         duration_minutes = int(duration_seconds / 60)
 
         # Use creator timezone for virtual meeting scheduling
-        tz_name = self.host_user_id.tz or self.create_uid.tz or 'UTC'
+        if self.room_location_ids:
+            tz_name = self.room_location_ids[0].tz or 'UTC'
+        else:
+            tz_name = self.host_user_id.tz or self.create_uid.tz or 'UTC'
         zoom_tz = self._get_zoom_supported_timezone(tz_name)
 
         url = "https://api.zoom.us/v2/users/me/meetings"
@@ -1296,24 +953,20 @@ class MeetingEvent(models.Model):
             UserError: If provider is not Zoom, no meeting ID, or summary unavailable
         """
         self.ensure_one()
-        if not self._can_shared_action():
-            raise UserError(_("You are not allowed to generate AI summaries."))
-
-        target = self if (self.create_uid == self.env.user or self.env.user.has_group('meeting_rooms.group_meeting_manager')) else self.sudo()
-        provider = getattr(target.virtual_room_id, 'provider', 'zoom')
+        provider = getattr(self.virtual_room_id, 'provider', 'zoom')
         if provider != 'zoom':
             raise UserError(_("AI Summary only available for Zoom."))
 
-        if not target.zoom_id:
+        if not self.zoom_id:
             raise UserError(_("No Meeting ID found."))
         
-        new_summary = target._logic_fetch_formatted_summary(target.zoom_id)
+        new_summary = self._logic_fetch_formatted_summary(self.zoom_id)
         if not new_summary:
             raise UserError(_("Failed to fetch summary. Meeting might not have AI Summary enabled or is not finished yet."))
 
         header_style = "border-top: 2px solid #00A09D; margin-top: 20px; padding-top: 10px; color: #00A09D;"
         divider = f"<div style='{header_style}'><h3>✨ Meeting AI Summary Result</h3></div>"
-        target.write({'ai_summary': divider + new_summary})
+        self.write({'ai_summary': divider + new_summary})
 
     def _logic_fetch_formatted_summary(self, mid):
         """
@@ -1502,23 +1155,19 @@ class MeetingEvent(models.Model):
                 conflict_loc = self.search(domain_loc, limit=1)
                 if conflict_loc:
                     clashed_rooms = set(ev.room_location_ids.mapped('name')) & set(conflict_loc.room_location_ids.mapped('name'))
-                    raise ValidationError(_(
-                        f"Location Conflict!\n"
-                        f"\n"
-                        f"The following room(s) are already booked: {', '.join(clashed_rooms)}\n"
-                        f"Conflicting meeting: '{conflict_loc.subject}'"
-                    ))
+                    raise ValidationError(
+                        f"LOCATION CLASH!\n"
+                        f"Room {', '.join(clashed_rooms)} is already booked for meeting '{conflict_loc.subject}'."
+                    )
 
             if ev.virtual_room_id:
                 domain_virtual = base_domain + [('virtual_room_id', '=', ev.virtual_room_id.id)]
                 conflict_virtual = self.search(domain_virtual, limit=1)
                 if conflict_virtual:
-                    raise ValidationError(_(
-                        f"Virtual Room Conflict!\n"
-                        f"\n"
-                        f"The virtual room '{ev.virtual_room_id.name}' is already in use.\n"
-                        f"Conflicting meeting: '{conflict_virtual.subject}'"
-                    ))
+                    raise ValidationError(
+                        f"VIRTUAL ROOM CLASH!\n"
+                        f"Virtual Account '{ev.virtual_room_id.name}' is already used for meeting '{conflict_virtual.subject}'."
+                    )
 
             if ev.attendee:
                 domain_user = base_domain + [('attendee', 'in', ev.attendee.ids)]
@@ -1526,14 +1175,11 @@ class MeetingEvent(models.Model):
                 if conflict_user:
                     busy_people = set(ev.attendee.mapped('name')) & set(conflict_user.attendee.mapped('name'))
                     if busy_people:
-                        raise ValidationError(_(
-                            f"Attendee Conflict!\n"
-                            f"\n"
-                            f"The following person(s) have another meeting scheduled:\n"
-                            f"{', '.join(busy_people)}\n"
-                            f"\n"
-                            f"Conflicting meeting: '{conflict_user.subject}'"
-                        ))
+                        raise ValidationError(
+                            f"ATTENDEE CLASH!\n"
+                            f"The following people: {', '.join(busy_people)} "
+                            f"already have another meeting ('{conflict_user.subject}')."
+                        )
 
     # ==========================
     # ICS / CALENDAR GENERATION (FIXED & ROBUST)
@@ -1734,7 +1380,7 @@ class MeetingEvent(models.Model):
         7. Changes state to 'cancel'
         """
         # === SECURITY CHECK FIRST (BEFORE TOUCHING ZOOM) ===
-        is_manager = self.env.user.has_group('meeting_rooms.group_meeting_manager')
+        is_manager = self.env.user.has_group('meeting_rooms_2.group_meeting_manager')
         for ev in self:
             if ev.create_uid != self.env.user and not is_manager:
                 raise UserError(_(
@@ -1793,31 +1439,29 @@ class MeetingEvent(models.Model):
         return True
 
     # ==========================
-    # CRON JOB HANDLER (OPTIMIZED)
+    # CRON JOB HANDLER
     # ==========================
     @api.model
     def _cron_auto_delete_activities(self):
         """
         Scheduled job to delete stale activity notifications.
         
-        OPTIMIZATION: Added limit to prevent timeout on large datasets.
-        Processes 1000 records per execution to maintain server stability.
+        Automatically removes activities with deadlines before today for both
+        meeting.event and meeting.rooms models to keep activity list clean.
         
         This method is called by Odoo cron scheduler (configured in data/cron_job.xml).
         """
-        limit_count = 1000  # Limit per run to prevent timeout
-        
         # Delete stale activities for meeting.event (parent)
         activities_event = self.env['mail.activity'].search([
             ('res_model', '=', 'meeting.event'),
             ('date_deadline', '<', fields.Date.today())
-        ], limit=limit_count)
+        ])
 
         # Delete stale activities for meeting.rooms (child)
         activities_rooms = self.env['mail.activity'].search([
             ('res_model', '=', 'meeting.rooms'),
             ('date_deadline', '<', fields.Date.today())
-        ], limit=limit_count)
+        ])
 
         # Combine results
         all_activities = activities_event + activities_rooms
@@ -1825,31 +1469,9 @@ class MeetingEvent(models.Model):
 
         if count > 0:
             all_activities.unlink()
-            _logger.info(f"CRON JOB: Deleted {count} Stale Activities (Limit applied).")
-    
-    @api.model
-    def _cron_delete_old_ics_files(self):
-        """
-        NEW CRON: Delete .ics attachments older than 3 months to save storage space.
-        
-        Runs weekly to prevent database bloat from accumulated calendar files.
-        Deletes up to 1000 old attachments per execution.
-        """
-        three_months_ago = datetime.now() - timedelta(days=90)
-        
-        # Search attachments linked to this module
-        attachments = self.env['ir.attachment'].search([
-            ('res_model', 'in', ['meeting.event', 'meeting.rooms']),
-            ('res_field', '=', 'calendar_file'),
-            ('create_date', '<', three_months_ago)
-        ], limit=1000)
-        
-        if attachments:
-            count = len(attachments)
-            attachments.unlink()
-            _logger.info(f"CRON CLEANUP: Deleted {count} old ICS files.")
+            _logger.info(f"CRON JOB: SUCCESSFULLY DELETED {count} Stale Activities.")
         else:
-            _logger.info("CRON CLEANUP: No old ICS files to delete.")
+            _logger.info("CRON JOB: No stale activities found.")
 
     # ==========================
     # SMART BUTTON ACTION
