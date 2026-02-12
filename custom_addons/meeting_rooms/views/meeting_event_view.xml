@@ -5,12 +5,7 @@
         <field name="name">meeting_event_calendar_view</field>
         <field name="model">meeting.event</field>
         <field name="arch" type="xml">
-            <calendar string="Meeting Date"
-                      date_start="start_date"
-                      date_stop="end_date"
-                      mode="day"
-                      quick_add="False"
-                      color="state">
+            <calendar string="Meeting Date" date_start="start_date" date_stop="end_date" mode="day" quick_add="False" color="state">
                 <field name="room_location_ids"/>
                 <field name="subject"/>
                 <field name="start_date"/>
@@ -38,66 +33,34 @@
         </field>
     </record>
 
-        <record id="meeting_event_form_view" model="ir.ui.view">
+    <record id="meeting_event_form_view" model="ir.ui.view">
         <field name="name">meeting_event_form_view</field>
         <field name="model">meeting.event</field>
         <field name="arch" type="xml">
             <form string="Meeting Event">
-            <header>
-                <button name="action_confirm" 
-                    type="object" 
-                    states="draft" 
-                    string="Confirm" 
-                    class="btn-primary"/>
+                <header>
+                    <button name="action_confirm" type="object" states="draft" string="Confirm" class="btn-primary"/>
                     
-                <button name="action_generate_virtual_link" 
-                    type="object" 
-                    string="Generate Meeting Link" 
-                    class="oe_highlight"
-                    icon="fa-video-camera"
-                    attrs="{'invisible': ['|', '|', ('virtual_room_id', '=', False), ('state', '!=', 'confirm'), ('zoom_id', '!=', False)]}"/>
+                    <button name="action_generate_virtual_link" type="object" string="Generate Meeting Link" class="oe_highlight" icon="fa-video-camera" attrs="{'invisible': ['|', '|', ('virtual_room_id', '=', False), ('state', '!=', 'confirm'), ('zoom_id', '!=', False)]}"/>
 
-                <button name="action_get_ai_summary" 
-                    type="object" 
-                    string="Get AI Summary" 
-                    class="oe_highlight"
-                    icon="fa-magic"
-                    attrs="{'invisible': ['|', '|', ('virtual_room_id', '=', False), ('state', '!=', 'confirm'), ('zoom_id', '=', False)]}"/>
+                    <button name="action_get_ai_summary" type="object" string="Get AI Summary" class="oe_highlight" icon="fa-magic" attrs="{'invisible': ['|', '|', ('virtual_room_id', '=', False), ('state', '!=', 'confirm'), ('zoom_id', '=', False)]}"/>
 
-                <button name="action_cancel" 
-                    type="object" 
-                    states="confirm" 
-                    string="Cancel" 
-                    class="btn-secondary"
-                    confirm="WARNING: Are you sure you want to cancel this Event? This action will automatically cancel ALL connected Meeting Rooms."/>
+                    <button name="action_cancel" type="object" states="confirm" string="Cancel" class="btn-secondary" confirm="WARNING: Are you sure you want to cancel this Event? This action will automatically cancel ALL connected Meeting Rooms."/>
 
-                <button name="action_draft" 
-                    type="object" 
-                    states="cancel" 
-                    string="Set To Draft" 
-                    class="btn-secondary"
-                    confirm="WARNING: Setting Event to Draft will also set ALL Meeting Rooms to Draft. Continue?"/>
+                    <button name="action_draft" type="object" states="cancel" string="Set To Draft" class="btn-secondary" confirm="WARNING: Setting Event to Draft will also set ALL Meeting Rooms to Draft. Continue?"/>
                             
-                <field name="state" widget="statusbar" statusbar_visible="draft,confirm,cancel"/>
-            </header>
+                    <field name="state" widget="statusbar" statusbar_visible="draft,confirm,cancel"/>
+                </header>
 
                 <sheet>
                     <div class="oe_button_box" name="button_box">
-                        <button name="%(meeting_rooms.action_meeting_booking_link)d" 
-                                type="action" 
-                                class="oe_stat_button" 
-                                icon="fa-link" 
-                                string="Booking Links">
+                        <button name="%(meeting_rooms.action_my_booking_links)d" type="action" class="oe_stat_button" icon="fa-link" string="Booking Links">
                         </button>
                         
-                        <button name="open_zoom_link"
-                                type="object"
-                                class="oe_stat_button"
-                                icon="fa-video-camera"
-                                string="Join Meeting"
-                                attrs="{'invisible': [('zoom_link', '=', False)]}">
+                        <button name="open_zoom_link" type="object" class="oe_stat_button" icon="fa-video-camera" string="Join Meeting" attrs="{'invisible': [('zoom_link', '=', False)]}">
                         </button>
                     </div>
+                    
                     <group>
                         <group>
                             <field name="subject" required="1"/>
@@ -106,32 +69,39 @@
                             <field name="guest_partner_id" widget="res_partner_many2one" context="{'show_email': True}"/>
                             <field name="guest_emails" placeholder="john@example.com, jane@example.com"/>
                             
-                            <field name="virtual_room_id" 
-                                   widget="selection" 
-                                   string="Virtual Room Provider" 
-                                   placeholder="Leave empty for offline meeting"/>
+                            <field name="virtual_room_id" widget="selection" string="Virtual Room Provider" placeholder="Leave empty for offline meeting"/>
                             
                             <field name="description"/>
-                            <field name="calendar_alarm"
-                                   domain="[('interval','=','minutes'),('alarm_type','=','notification')]"
-                                   widget="selection"/>
+                            <field name="calendar_alarm" domain="[('interval','=','minutes'),('alarm_type','=','notification')]" widget="selection"/>
                             <field name="recurrency"/>
                         </group>
+                        
                         <group>
-                            <field name="start_date"/>
-                            <field name="start_date_utc_str" readonly="1" decoration-info="1"/>
-                            
-                            <field name="end_date"/>
-                            <field name="end_date_utc_str" readonly="1" decoration-info="1"/>
+                            <label for="start_date" string="Start Time"/>
+                            <div>
+                                <field name="start_date" widget="datetime" class="oe_inline"/>
+                                <div class="mt-1">
+                                    <i class="fa fa-globe" style="color: #00A09D;"/> 
+                                    <span style="font-weight: bold; color: #00A09D;">UTC: </span>
+                                    <field name="start_date_utc_str" readonly="1" nolabel="1" class="oe_inline" style="font-weight: bold; color: #00A09D;"/>
+                                </div>
+                            </div>
 
-                            <separator string="Timezone Breakdown"/>
+                            <label for="end_date" string="End Time"/>
+                            <div>
+                                <field name="end_date" widget="datetime" class="oe_inline"/>
+                                <div class="mt-1">
+                                    <i class="fa fa-clock-o" style="color: #00A09D;"/> 
+                                    <span style="font-weight: bold; color: #00A09D;">UTC: </span>
+                                    <field name="end_date_utc_str" readonly="1" nolabel="1" class="oe_inline" style="font-weight: bold; color: #00A09D;"/>
+                                </div>
+                            </div>
+
+                            <separator string="Timezone Breakdown" colspan="2"/>
                             <field name="multi_timezone_display" nolabel="1" colspan="2"/>
 
-                            <field name="attendee"
-                                   options="{'no_create_edit': True,'no_create': True}"
-                                   widget="many2many_tags"
-                                   domain="[('login','ilike','@Tripper.com'),('id','!=',uid)]"/>
-                            <button name="create_calendar_web" type="object" string="Send Email &amp; Download ICS"/>
+                            <field name="attendee" options="{'no_create_edit': True,'no_create': True}" widget="many2many_tags" domain="[('login','ilike','@Tripper.com'),('id','!=',uid)]"/>
+                            <button name="create_calendar_web" type="object" string="Send Email &amp; Download ICS" class="oe_highlight" icon="fa-envelope"/>
                         </group>
                     </group>
 
@@ -143,10 +113,7 @@
                     <notebook>
                         <page string="Room Bookings">
                             <field name="meeting_room_ids">
-                                <tree string="Generated Bookings" 
-                                      decoration-danger="state=='cancel'" 
-                                      decoration-info="state=='draft'" 
-                                      decoration-success="state=='confirm'">
+                                <tree string="Generated Bookings" decoration-danger="state=='cancel'" decoration-info="state=='draft'" decoration-success="state=='confirm'">
                                     <field name="room_location"/>
                                     <field name="start_date"/>
                                     <field name="end_date"/>
@@ -156,7 +123,6 @@
                         </page>
 
                         <page string="Virtual Meeting Info" attrs="{'invisible': [('zoom_id', '=', False)]}">
-                            
                             <group string="Connection Details">
                                 <group>
                                     <field name="zoom_id" string="Meeting ID" readonly="1" class="oe_inline" style="font-weight: bold; font-size: 1.2em;"/>
@@ -217,10 +183,6 @@
         <field name="view_mode">calendar,tree,form</field>
     </record>
 
-    <menuitem name="Meeting Events"
-              id="menu_meeting_event"
-              parent="meeting_rooms.menu_meeting_rooms"
-              action="action_meeting_event"
-              sequence="1"/> 
+    <menuitem name="Meeting Events" id="menu_meeting_event" parent="meeting_rooms.menu_meeting_rooms" action="action_meeting_event" sequence="1"/> 
 
 </odoo>

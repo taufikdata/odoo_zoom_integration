@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <!-- Database Indexes for Performance Optimization -->
+        <!-- These indexes must be created manually via PostgreSQL -->
+        <!-- Run the SQL commands below on your Odoo database -->
+        
+        <!-- 
+        Database Index Creation Script
+        =============================
+        
+        Connect to your Odoo database and run:
+        
+        psql -U odoo -d odoo_db << EOF
+        
+        -- Index for meeting.event queries (booking calendar)
+        CREATE INDEX IF NOT EXISTS meeting_event_start_date_idx 
+            ON meeting_event(start_date);
+        
+        CREATE INDEX IF NOT EXISTS meeting_event_end_date_idx 
+            ON meeting_event(end_date);
+        
+        CREATE INDEX IF NOT EXISTS meeting_event_state_idx 
+            ON meeting_event(state);
+        
+        -- Combined index for double-booking checks (most common query)
+        CREATE INDEX IF NOT EXISTS meeting_event_dates_state_idx 
+            ON meeting_event(start_date, end_date, state);
+        
+        -- Index for attendee queries
+        CREATE INDEX IF NOT EXISTS meeting_event_attendee_idx 
+            ON meeting_event_attendee(meeting_event_id, res_users_id);
+        
+        -- Index for booking link token lookups
+        CREATE INDEX IF NOT EXISTS booking_link_token_idx 
+            ON meeting_booking_link(token);
+        
+        -- Index for room location lookups
+        CREATE INDEX IF NOT EXISTS meeting_rooms_location_idx 
+            ON meeting_rooms(room_location);
+        
+        -- Index for activity cleanup cron jobs
+        CREATE INDEX IF NOT EXISTS mail_activity_res_model_date_idx 
+            ON mail_activity(res_model, date_deadline);
+        
+        COMMIT;
+        EOF
+        
+        -->
+    </data>
+</odoo>

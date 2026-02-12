@@ -67,12 +67,41 @@ class MeetingRooms(models.Model):
     calendar_file = fields.Binary(string="Calendar File")
     
     virtual_room_id = fields.Many2one('virtual.room', string="Virtual Room")
+    
+    # === HOST INFORMATION (FOR PERMISSION CHECKS) ===
+    host_user_id = fields.Many2one('res.users', string="Host User", help="Host/owner of the booking link")
 
     # === FIELDS FOR MULTI-TIMEZONE DISPLAY ===
     multi_timezone_display = fields.Html(
         related='meeting_event_id.multi_timezone_display', 
         string="Timezone Details", 
         readonly=True
+    )
+    
+    # === COMPUTED FIELDS: DISPLAY DATES IN UTC ONLY ===
+    # Note: Base start_date/end_date already shows user's timezone (Odoo native)
+    start_date_utc_str = fields.Char(
+        string="Start (UTC)",
+        compute='_compute_utc_date_strings',
+        help="Start date/time in UTC timezone"
+    )
+    end_date_utc_str = fields.Char(
+        string="End (UTC)",
+        compute='_compute_utc_date_strings',
+        help="End date/time in UTC timezone"
+    )
+
+    # === FIELD BARU: USER VIEW TIME (SERVER-SIDE CONVERSION) ===
+    user_view_start_date = fields.Char(
+        string="Start Time (My Timezone)",
+        compute='_compute_user_view_time',
+        help="Waktu meeting dikonversi ke timezone user yang sedang login saat ini."
+    )
+    
+    user_view_end_date = fields.Char(
+        string="End Time (My Timezone)",
+        compute='_compute_user_view_time',
+        help="Waktu meeting dikonversi ke timezone user yang sedang login saat ini."
     )
 
     # =========================================================================
@@ -120,6 +149,91 @@ class MeetingRooms(models.Model):
         offset_hours = int(offset_total_seconds // 3600)
         offset_minutes = int(abs(offset_total_seconds) % 3600 // 60)
         return f"{'+' if offset_hours >= 0 else '-'}{abs(offset_hours):02d}{abs(offset_minutes):02d}"
+
+    @api.depends('start_date', 'end_date')
+    def _compute_utc_date_strings(self):
+        """
+        DEBUG MODE: Check current user timezone.
+        """
+        # --- ADD THIS LOG FOR DEBUGGING ---
+        import logging
+        _logger = logging.getLogger(__name__)
+        
+        current_user = self.env.user
+        context_tz = self.env.context.get('tz')
+        
+        _logger.info("="*50)
+        _logger.info(f"DEBUG TIMEZONE CHECK")
+        _logger.info(f"User Login    : {current_user.name} (ID: {current_user.id})")
+        _logger.info(f"User DB TZ    : {current_user.tz} (Value stored in database)")
+        _logger.info(f"Context TZ    : {context_tz} (Value sent by Browser/Session)")
+        _logger.info("="*50)
+        # -------------------------
+
+        """
+        Display start and end dates in UTC timezone for reference.
+        
+        This helps users see the actual UTC values stored in database,
+        useful for cross-timezone coordination.
+        """
+        for rec in self:
+            if rec.start_date:
+                start_dt = rec.start_date
+                if isinstance(start_dt, str):
+                    start_dt = fields.Datetime.to_datetime(start_dt)
+                if start_dt.tzinfo is None:
+                    start_dt = pytz.utc.localize(start_dt)
+                rec.start_date_utc_str = start_dt.strftime('%Y-%m-%d %H:%M:%S UTC')
+            else:
+                rec.start_date_utc_str = ''
+
+            if rec.end_date:
+                end_dt = rec.end_date
+                if isinstance(end_dt, str):
+                    end_dt = fields.Datetime.to_datetime(end_dt)
+                if end_dt.tzinfo is None:
+                    end_dt = pytz.utc.localize(end_dt)
+                rec.end_date_utc_str = end_dt.strftime('%Y-%m-%d %H:%M:%S UTC')
+            else:
+                rec.end_date_utc_str = ''
+
+    @api.depends('start_date', 'end_date')
+    def _compute_user_view_time(self):
+        """
+        SERVER-SIDE HARDCODING SOLUTION: Calculate time based on the timezone of the currently LOGGED-IN user.
+        
+        This bypasses browser logic and forces server-side calculations which are guaranteed to be correct.
+        This field returns TEXT (String), not Datetime, so the browser cannot change it.
+        
+        Example Output:
+        - User Login Jakarta → "12/02/2026 14:00:00 (Asia/Jakarta)"
+        - User Login Makassar → "12/02/2026 15:00:00 (Asia/Makassar)"
+        - User Login Jayapura → "12/02/2026 16:00:00 (Asia/Jayapura)"
+        """
+        for rec in self:
+            # Get timezone of the user currently viewing this screen
+            current_user_tz = self.env.user.tz or 'UTC'
+            
+            try:
+                tz = pytz.timezone(current_user_tz)
+            except:
+                tz = pytz.utc
+            
+            # Convert Start Date
+            if rec.start_date:
+                utc_start = pytz.utc.localize(rec.start_date)
+                local_start = utc_start.astimezone(tz)
+                rec.user_view_start_date = f"{local_start.strftime('%d/%m/%Y %H:%M:%S')} ({current_user_tz})"
+            else:
+                rec.user_view_start_date = "Not Set"
+            
+            # Konversi End Date
+            if rec.end_date:
+                utc_end = pytz.utc.localize(rec.end_date)
+                local_end = utc_end.astimezone(tz)
+                rec.user_view_end_date = f"{local_end.strftime('%d/%m/%Y %H:%M:%S')} ({current_user_tz})"
+            else:
+                rec.user_view_end_date = "Not Set"
 
     def send_email_meeting(self):
         self.ensure_one()

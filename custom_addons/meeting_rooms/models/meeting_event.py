@@ -87,6 +87,11 @@ class MeetingEvent(models.Model):
         string="Guest Emails",
         help="Additional guest emails (comma-separated) from booking portal"
     )
+    guest_tz = fields.Char(
+        string="Guest Timezone",
+        help="Timezone selected by guest when booking through booking link",
+        default='UTC'
+    )
     # ========================================
 
     zoom_id = fields.Char(string="Meeting ID", readonly=True, copy=False) 
@@ -135,6 +140,21 @@ class MeetingEvent(models.Model):
         string="End (UTC)",
         compute='_compute_utc_date_strings',
         help="End date/time in UTC timezone"
+    )
+
+    # === NEW FIELD: USER VIEW TIME (SERVER-SIDE CONVERSION) ===
+    # This field displays meeting time in the timezone of the currently logged-in user
+    # Calculated on server (Python), not in browser. So it cannot be falsified!
+    user_view_start_date = fields.Char(
+        string="Start Time (My Timezone)",
+        compute='_compute_user_view_time',
+        help="Waktu meeting dikonversi ke timezone user yang sedang login saat ini."
+    )
+    
+    user_view_end_date = fields.Char(
+        string="End Time (My Timezone)",
+        compute='_compute_user_view_time',
+        help="Waktu meeting dikonversi ke timezone user yang sedang login saat ini."
     )
 
     # ==========================================================
@@ -199,6 +219,23 @@ class MeetingEvent(models.Model):
     @api.depends('start_date', 'end_date')
     def _compute_utc_date_strings(self):
         """
+        DEBUG MODE: Check current user timezone.
+        """
+        # --- ADD THIS LOG FOR DEBUGGING ---
+        import logging
+        _logger = logging.getLogger(__name__)
+        
+        current_user = self.env.user
+        context_tz = self.env.context.get('tz')
+        
+        _logger.info("="*50)
+        _logger.info(f"DEBUG TIMEZONE CHECK")
+        _logger.info(f"User Login    : {current_user.name} (ID: {current_user.id})")
+        _logger.info(f"User DB TZ    : {current_user.tz} (Yang tersimpan di database)")
+        _logger.info(f"Context TZ    : {context_tz} (Yang dikirim oleh Browser/Session)")
+        _logger.info("="*50)
+        # -------------------------
+        """
         Display start and end dates in UTC timezone for reference.
         
         This helps users see the actual UTC values stored in database,
@@ -224,6 +261,44 @@ class MeetingEvent(models.Model):
                 rec.end_date_utc_str = end_dt.strftime('%Y-%m-%d %H:%M:%S UTC')
             else:
                 rec.end_date_utc_str = ''
+
+    @api.depends('start_date', 'end_date')
+    def _compute_user_view_time(self):
+        """
+        SOLUSI HARDCODE VIA SERVER: Hitung jam berdasarkan Timezone User yang sedang LOGIN.
+        
+        Ini mem-bypass logika browser dan memaksa hitungan server yang pasti benar.
+        Field ini mengembalikan TEXT (String), bukan Datetime, agar browser tidak bisa ubah.
+        
+        Contoh Output:
+        - User Login Jakarta → "12/02/2026 14:00:00 (Asia/Jakarta)"
+        - User Login Makassar → "12/02/2026 15:00:00 (Asia/Makassar)"
+        - User Login Jayapura → "12/02/2026 16:00:00 (Asia/Jayapura)"
+        """
+        for rec in self:
+            # Get timezone of the user currently viewing this screen
+            current_user_tz = self.env.user.tz or 'UTC'
+            
+            try:
+                tz = pytz.timezone(current_user_tz)
+            except:
+                tz = pytz.utc
+            
+            # Konversi Start Date
+            if rec.start_date:
+                utc_start = pytz.utc.localize(rec.start_date)
+                local_start = utc_start.astimezone(tz)
+                rec.user_view_start_date = f"{local_start.strftime('%d/%m/%Y %H:%M:%S')} ({current_user_tz})"
+            else:
+                rec.user_view_start_date = "Not Set"
+            
+            # Konversi End Date
+            if rec.end_date:
+                utc_end = pytz.utc.localize(rec.end_date)
+                local_end = utc_end.astimezone(tz)
+                rec.user_view_end_date = f"{local_end.strftime('%d/%m/%Y %H:%M:%S')} ({current_user_tz})"
+            else:
+                rec.user_view_end_date = "Not Set"
 
     @api.depends('start_date', 'end_date', 'room_location_ids', 'host_user_id', 'virtual_room_id', 'zoom_link')
     def _compute_multi_timezone_display(self):
@@ -307,10 +382,13 @@ class MeetingEvent(models.Model):
         """
         Regenerate activity notifications for all meeting attendees.
         
+        FEATURE: Each attendee receives activity in their own timezone!
+        
         This method:
         1. Deletes all existing activities for this meeting
-        2. Creates new activities for each attendee with formatted meeting details
-        3. Uses creator's timezone for display consistency
+        2. For each attendee, creates activity with their timezone
+        3. Email and dates are shown according to attendee's timezone
+        4. Triggers email automation for internal users (external users get email only via "SEND EMAIL & DOWNLOAD ICS")
         
         Context:
             mail_activity_automation_skip: If True, skip activity generation
@@ -328,46 +406,52 @@ class MeetingEvent(models.Model):
         ])
         old_activities.unlink()
 
-        # 2. Use helper for timezone conversion (fix POINT 4 - code duplication)
-        local_times = ev._compute_local_times()
-        
         loc_name = ", ".join(ev.room_location_ids.mapped('name')) if ev.room_location_ids else "Virtual"
-        formatted_start_time = local_times['formatted_date']
-        start_time_hours = local_times['start_time_hours']
-        end_time_hours = local_times['end_time_hours']
-        tz_name = local_times['tz_name']
         
-        duration = local_times['local_end'] - local_times['local_start']
-        meeting_hours, remainder = divmod(duration.total_seconds(), 3600)
-        meeting_minutes, meeting_seconds = divmod(remainder, 60)
-        meeting_hours_str = f"{int(meeting_hours)} hours " if meeting_hours > 0 else ""
-        meeting_minutes_str = f"{int(meeting_minutes)} minutes" if meeting_minutes > 0 else ""
-
         virtual_room_info = ""
         if ev.zoom_link:
-                virtual_room_info = f"<br/><br/><b>Online Meeting:</b> <a href='{ev.zoom_link}' target='_blank'>Click to Join</a>"
+            virtual_room_info = f"<br/><br/><b>Online Meeting:</b> <a href='{ev.zoom_link}' target='_blank'>Click to Join</a>"
         elif ev.virtual_room_id:
             virtual_room_info = f"<br/>(Virtual Room: {ev.virtual_room_id.name})"
 
-        # 3. REGENERATE
+        # 3. REGENERATE - EACH ATTENDEE WITH THEIR OWN TIMEZONE
         for user in ev.attendee:
-            # Generate note with timezone table
+            # Get attendee's timezone (not host's timezone!)
+            attendee_tz = user.tz or 'UTC'
+            
+            # Compute local times using attendee's timezone
+            local_times = ev._compute_local_times(attendee_tz)
+            
+            formatted_start_time = local_times['formatted_date']
+            start_time_hours = local_times['start_time_hours']
+            end_time_hours = local_times['end_time_hours']
+            tz_name = local_times['tz_name']
+            
+            duration = local_times['local_end'] - local_times['local_start']
+            meeting_hours, remainder = divmod(duration.total_seconds(), 3600)
+            meeting_minutes, meeting_seconds = divmod(remainder, 60)
+            meeting_hours_str = f"{int(meeting_hours)} hours " if meeting_hours > 0 else ""
+            meeting_minutes_str = f"{int(meeting_minutes)} minutes" if meeting_minutes > 0 else ""
+
+            # Generate note with attendee's timezone
+            # Use host_user_id instead of create_uid (host is the owner of the booking link)
+            host_name = ev.host_user_id.name if ev.host_user_id else ev.create_uid.name
             activity_note = f"""
                 <p>Hi <b>{user.name}</b>,</p>
-                <p>I hope this message finds you well. <b>{ev.create_uid.name}</b> has invited you to the "{ev.subject}" meeting</p>
+                <p>I hope this message finds you well. <b>{host_name}</b> has invited you to the "{ev.subject}" meeting</p>
                 
-                <p><b>Schedule Details:</b></p>
+                <p><b>Schedule Details (in your timezone {tz_name}):</b></p>
                 <table border="0" style="margin-bottom: 10px;">
                     <tbody>
                         <tr>
-                            <td style="width:80px;">Date</td>
+                            <td style="width:120px;">Date</td>
                             <td>: {formatted_start_time}</td>
                         </tr>
                         <tr>
                             <td>Time</td>
-                            <td>: {start_time_hours} - {end_time_hours} ({tz_name})</td>
+                            <td>: <b>{start_time_hours} - {end_time_hours}</b> ({tz_name})</td>
                         </tr>
-                         <tr>
+                        <tr>
                             <td>Time (UTC)</td>
                             <td>: {ev.start_date} - {ev.end_date}</td>
                         </tr>
@@ -391,6 +475,8 @@ class MeetingEvent(models.Model):
 
             activity_note += "<br/>"
             
+            # Use date_deadline in attendee's timezone
+            # Activities will trigger email automation to internal users
             ev.sudo().activity_schedule(
                 'meeting_rooms.mail_act_meeting_rooms_approval',
                 user_id=user.id,
@@ -652,7 +738,8 @@ class MeetingEvent(models.Model):
                 target = ev.sudo()
 
             try:
-                _logger.info(f"Step 1: Regenerating activities for meeting {ev.id}")
+                _logger.info(f"Step 1: Regenerating schedule activities for meeting {ev.id}")
+                # Create schedule activities (without triggering email automation)
                 target._regenerate_all_activities()
                 
                 _logger.info(f"Step 2: Writing state confirm for meeting {ev.id}")
@@ -1439,7 +1526,8 @@ class MeetingEvent(models.Model):
                     'subject': ev.subject,
                     'name': ev.subject,
                     'room_location': loc.id,
-                    'virtual_room_id': ev.virtual_room_id.id, 
+                    'virtual_room_id': ev.virtual_room_id.id,
+                    'host_user_id': ev.host_user_id.id if ev.host_user_id else None,
                     'start_date': ev.start_date,
                     'end_date': ev.end_date,
                     'description': ev.description,
@@ -1538,16 +1626,335 @@ class MeetingEvent(models.Model):
     # ==========================
     # ICS / CALENDAR GENERATION (FIXED & ROBUST)
     # ==========================
+    def _generate_timezone_breakdown_html(self):
+        """
+        Generate HTML table showing meeting times in all relevant timezones.
+        Includes: physical locations + virtual room (host timezone)
+        """
+        self.ensure_one()
+        
+        breakdown = "<h4 style='color: #2c3e50; margin-top: 20px; margin-bottom: 10px;'>Timezone Breakdown:</h4>"
+        breakdown += "<table style='width:100%; font-size:13px; color:#444; border:1px solid #ddd; background-color:#f9f9f9;'>"
+        breakdown += "<tr style='background-color:#e8e8e8;'><th style='padding:8px; text-align:left;'>Location</th><th style='padding:8px; text-align:left;'>Local Time</th></tr>"
+        
+        # Add physical room locations
+        if self.room_location_ids:
+            for location in self.room_location_ids:
+                # Get location timezone (if not set, use host timezone)
+                loc_tz_name = getattr(location, 'tz', None) or (self.host_user_id.tz or self.create_uid.tz or 'UTC')
+                local_times = self._compute_local_times(loc_tz_name)
+                start_time = local_times['start_time_hours']
+                end_time = local_times['end_time_hours']
+                breakdown += f"<tr><td style='padding:8px; border-bottom:1px solid #ddd;'>🏢 {location.name}</td><td style='padding:8px; border-bottom:1px solid #ddd;'><b>{start_time} - {end_time}</b> <span style='color:#888; font-size:11px;'>({loc_tz_name})</span></td></tr>"
+        
+        # Add virtual room (in host timezone)
+        if self.zoom_link or self.virtual_room_id:
+            host_tz_name = self.host_user_id.tz or self.create_uid.tz or 'UTC'
+            local_times = self._compute_local_times(host_tz_name)
+            start_time = local_times['start_time_hours']
+            end_time = local_times['end_time_hours']
+            provider_name = "Zoom (Host)"
+            if self.virtual_room_id:
+                provider_name = f"{self.virtual_room_id.provider.replace('_', ' ').title() or 'Virtual Room'} (Host)"
+            breakdown += f"<tr><td style='padding:8px; border-bottom:1px solid #ddd;'>🎥 {provider_name}</td><td style='padding:8px; border-bottom:1px solid #ddd;'><b>{start_time} - {end_time}</b> <span style='color:#888; font-size:11px;'>({host_tz_name})</span></td></tr>"
+        
+        breakdown += "</table>"
+        return breakdown
+
+    def _generate_ics_full_content(self, recipient_name=None, recipient_tz=None):
+        """
+        Generate full formatted content for ICS DESCRIPTION field.
+        Includes: greeting, schedule details (date/time/utc/duration), location, and timezone breakdown.
+        Similar to activity format for consistency.
+        
+        Args:
+            recipient_name: Name of email recipient (for greeting)
+            recipient_tz: Timezone of recipient
+        """
+        self.ensure_one()
+        
+        if not recipient_name:
+            recipient_name = self.create_uid.name
+        if not recipient_tz:
+            recipient_tz = self.host_user_id.tz or self.create_uid.tz or 'UTC'
+        
+        # Get recipient local times
+        local_times = self._compute_local_times(recipient_tz)
+        local_start = local_times['local_start']
+        local_end = local_times['local_end']
+        start_date_str = local_start.strftime('%b %d, %Y')
+        start_time_str = local_start.strftime('%H:%M')
+        end_time_str = local_end.strftime('%H:%M')
+        
+        # Get UTC times
+        utc_start = self.start_date
+        utc_end = self.end_date
+        if utc_start and utc_start.tzinfo is None:
+            utc_start = pytz.utc.localize(utc_start)
+        if utc_end and utc_end.tzinfo is None:
+            utc_end = pytz.utc.localize(utc_end)
+        utc_start_str = utc_start.strftime('%Y-%m-%d %H:%M:%S')
+        utc_end_str = utc_end.strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Calculate duration
+        duration = self.end_date - self.start_date
+        duration_hours = int(duration.total_seconds() // 3600)
+        duration_minutes = int((duration.total_seconds() % 3600) // 60)
+        duration_str = ""
+        if duration_hours > 0:
+            duration_str = f"{duration_hours} hours "
+        if duration_minutes > 0:
+            duration_str += f"{duration_minutes} minutes"
+        
+        # Room locations
+        loc_names = ", ".join(self.room_location_ids.mapped('name')) if self.room_location_ids else "Virtual"
+        
+        # Build content (without greeting - start directly from "I hope...")
+        lines = [
+            f"I hope this message finds you well. {self.create_uid.name} has invited you to the \"{self.subject}\" meeting",
+            "",
+            f"Schedule Details (in your timezone {recipient_tz}):",
+            "",
+            f"Date\t: {start_date_str}",
+            f"Time\t: {start_time_str} - {end_time_str} ({recipient_tz})",
+            f"Time (UTC)\t: {utc_start_str} - {utc_end_str}",
+            f"Duration\t: {duration_str}",
+            f"Location\t: {loc_names}",
+            ""
+        ]
+        
+        # Add online meeting link if exists
+        if self.zoom_link:
+            lines.append(f"Online Meeting: {self.zoom_link}")
+            lines.append("")
+        
+        # Add timezone breakdown
+        lines.append("Timezone Breakdown:")
+        lines.append("")
+        
+        # Add physical rooms with their timezones
+        if self.room_location_ids:
+            for location in self.room_location_ids:
+                loc_tz_name = getattr(location, 'tz', None) or (self.host_user_id.tz or self.create_uid.tz or 'UTC')
+                loc_times = self._compute_local_times(loc_tz_name)
+                loc_start_time = loc_times['start_time_hours']
+                loc_end_time = loc_times['end_time_hours']
+                lines.append(f"🏢 {location.name}\t{loc_start_time} - {loc_end_time} ({loc_tz_name})")
+        
+        # Add virtual room
+        if self.zoom_link or self.virtual_room_id:
+            host_tz_name = self.host_user_id.tz or self.create_uid.tz or 'UTC'
+            host_times = self._compute_local_times(host_tz_name)
+            host_start_time = host_times['start_time_hours']
+            host_end_time = host_times['end_time_hours']
+            provider_name = f"{self.virtual_room_id.provider.replace('_', ' ').title() or 'Virtual Room'} (Host)" if self.virtual_room_id else "Zoom (Host)"
+            lines.append(f"🎥 {provider_name}\t{host_start_time} - {host_end_time} ({host_tz_name})")
+        
+        return "\n".join(lines)
+
+    def _generate_ics_content_string(self, rec, local_times, tz_name, tz_offset_str, attendee_email):
+        """
+        Helper to generate ICS string for a specific timezone.
+        POIN 1: Setiap attendee mendapat ICS dengan timezone mereka sendiri.
+        """
+        create_time = rec.create_date.strftime('%Y%m%dT%H%M%SZ')
+        dt_start = local_times['local_start'].strftime('%Y%m%dT%H%M%S')
+        dt_end = local_times['local_end'].strftime('%Y%m%dT%H%M%S')
+        
+        lines = [
+            "BEGIN:VCALENDAR",
+            "VERSION:2.0",
+            "PRODID:-//Odoo Meeting Rooms//EN",
+            "METHOD:REQUEST",
+            "BEGIN:VTIMEZONE",
+            f"TZID:{tz_name}",
+            "BEGIN:STANDARD",
+            "DTSTART:19700101T000000",
+            f"TZOFFSETFROM:{tz_offset_str}",
+            f"TZOFFSETTO:{tz_offset_str}",
+            f"TZNAME:{tz_name}",
+            "END:STANDARD",
+            "END:VTIMEZONE",
+            "BEGIN:VEVENT",
+            f"UID:meeting_event_{rec.id}",
+            f"SUMMARY:{rec.subject}",
+            f"DTSTAMP:{create_time}",
+            f"DTSTART;TZID={tz_name}:{dt_start}",
+            f"DTEND;TZID={tz_name}:{dt_end}",
+            f"ORGANIZER;CN=\"{rec.create_uid.name}\":mailto:{rec.create_uid.email}",
+            f"ATTENDEE;ROLE=REQ-PARTICIPANT;RSVP=TRUE;CN=\"Participant\":mailto:{attendee_email}",
+        ]
+        
+        # Include full formatted content in ICS description
+        ics_description = rec.description or ''
+        # Get recipient name and timezone from attendee_email
+        recipient_name = 'Participant'
+        for target in [rec.guest_partner_id] + list(rec.attendee):
+            if target and target.email == attendee_email:
+                recipient_name = target.name
+                break
+        ics_description += '\n' + rec._generate_ics_full_content(recipient_name, tz_name)
+        # Escape newlines for ICS format
+        ics_description = ics_description.replace('\n', '\\n')
+        lines.append(f"DESCRIPTION:{ics_description}")
+        
+        
+        loc_name = ", ".join(rec.room_location_ids.mapped('name')) if rec.room_location_ids else "Virtual"
+        if rec.zoom_link:
+            lines.append(f"LOCATION:{rec.zoom_link}")
+        else:
+            lines.append(f"LOCATION:{loc_name}")
+        
+        lines.append("END:VEVENT")
+        lines.append("END:VCALENDAR")
+        
+        return "\r\n".join(lines)
+
+    def _send_calendar_emails_silent(self):
+        """
+        Send personalized calendar emails to all attendees (internal + external).
+        This is the silent version of create_calendar_web() - returns nothing, just sends emails.
+        Used for auto-sending when confirm or generate link buttons are clicked.
+        """
+        self.ensure_one()
+        rec = self
+        
+        # 1. Build recipient list
+        targets = []
+        
+        # A. Internal Users (Use their Odoo Timezone)
+        for user in rec.attendee:
+            if user.email:
+                targets.append({
+                    'email': user.email,
+                    'name': user.name,
+                    'tz': user.tz or 'UTC',
+                    'type': 'user'
+                })
+        
+        # B. Guest Partner
+        host_tz = rec.host_user_id.tz or rec.create_uid.tz or 'UTC'
+        guest_tz = rec.guest_tz or host_tz
+        if rec.guest_partner_id and rec.guest_partner_id.email:
+            targets.append({
+                'email': rec.guest_partner_id.email,
+                'name': rec.guest_partner_id.name,
+                'tz': guest_tz,
+                'type': 'partner'
+            })
+        
+        # C. Extra Emails (Raw strings) - Use same timezone as guest booking
+        if rec.guest_emails:
+            extras = [e.strip() for e in re.split(r'[;\n,]+', rec.guest_emails) if e.strip()]
+            for e in extras:
+                targets.append({
+                    'email': e,
+                    'name': 'Guest',
+                    'tz': guest_tz,
+                    'type': 'guest'
+                })
+        
+        if not targets:
+            _logger.info(f"No email recipients configured for meeting {rec.id}")
+            return
+        
+        # 2. BATCH PROCESS - Send emails in batches of 50
+        sent_count = 0
+        BATCH_SIZE = 50
+        
+        for batch_start in range(0, len(targets), BATCH_SIZE):
+            batch_end = min(batch_start + BATCH_SIZE, len(targets))
+            batch = targets[batch_start:batch_end]
+            
+            for target in batch:
+                try:
+                    target_tz = target['tz']
+                    
+                    # A. Calculate times in THEIR timezone
+                    local_times = rec._compute_local_times(target_tz)
+                    tz_name = local_times['tz_name']
+                    tz_offset_str = local_times['tz_offset_str']
+                    formatted_date = local_times['formatted_date']
+                    start_str = local_times['start_time_hours']
+                    end_str = local_times['end_time_hours']
+                    
+                    # B. Generate ICS content for this timezone
+                    ics_content = self._generate_ics_content_string(
+                        rec, local_times, tz_name, tz_offset_str, target['email']
+                    )
+                    
+                    # Create Attachment
+                    filename = f"invitation_{rec.id}_{target['type']}.ics"
+                    encoded_ics = base64.b64encode(ics_content.encode('utf-8'))
+                    
+                    attachment = self.env['ir.attachment'].sudo().create({
+                        'name': filename,
+                        'type': 'binary',
+                        'res_model': 'meeting.event',
+                        'res_id': rec.id,
+                        'datas': encoded_ics,
+                        'public': True
+                    })
+                    
+                    # C. Generate Email Body for this recipient (with their times)
+                    loc_name = ", ".join(rec.room_location_ids.mapped('name')) if rec.room_location_ids else "Virtual"
+                    virtual_link = ""
+                    if rec.zoom_link:
+                        virtual_link = f"<br/><b>Join Link:</b> <a href='{rec.zoom_link}' target='_blank'>Click Here</a>"
+                    
+                    # Generate timezone breakdown HTML
+                    tz_breakdown = rec._generate_timezone_breakdown_html()
+                    
+                    email_body = f"""
+                    <div style="font-family: sans-serif;">
+                        Hi <b>{target['name']}</b>,<br/><br/>
+                        <b>{rec.create_uid.name}</b> has invited you to a meeting.<br/><br/>
+                        <table border="0" style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; width: 100%; max-width: 600px;">
+                            <tbody>
+                                <tr><td style="width:100px;"><b>Topic</b></td><td>: {rec.subject}</td></tr>
+                                <tr><td><b>Date</b></td><td>: {formatted_date}</td></tr>
+                                <tr><td><b>Time</b></td><td>: <span style="font-size: 1.1em; color: #00A09D; font-weight: bold;">{start_str} - {end_str}</span> ({tz_name})</td></tr>
+                                <tr><td><b>Location</b></td><td>: {loc_name} {virtual_link}</td></tr>
+                            </tbody>
+                        </table>
+                        <br/>
+                        {tz_breakdown}
+                        <br/>
+                        <p style="color: #666; font-size: 0.9em;">* Attached is the calendar file (.ics) converted to your timezone ({tz_name}).</p>
+                    </div>
+                    """
+                    
+                    # D. Send Email
+                    mail_values = {
+                        'subject': f"Invitation: {rec.subject} @ {start_str} ({tz_name})",
+                        'email_from': rec.create_uid.email_formatted,
+                        'email_to': target['email'],
+                        'body_html': email_body,
+                        'attachment_ids': [(4, attachment.id)],
+                        'auto_delete': True,
+                    }
+                    self.env['mail.mail'].sudo().create(mail_values).send()
+                    sent_count += 1
+                    
+                except Exception as e:
+                    _logger.error(f"Failed to send email to {target.get('email')}: {str(e)}")
+            
+            # Commit after every batch
+            if (batch_start + BATCH_SIZE) % (BATCH_SIZE * 2) == 0:
+                self.env.cr.commit()
+        
+        _logger.info(f"Sent {sent_count} personalized invitation emails for meeting {rec.id}")
+
     def create_calendar_web(self):
         """
-        Generate ICS calendar file and send email invitation to attendees.
+        Generate ICS calendar file and send PERSONALIZED email invitations to attendees.
         
-        Creates RFC 5545 compliant iCalendar file with:
-        - Proper timezone handling with DST support
-        - VTIMEZONE blocks for calendar client compatibility
-        - Attendee list with RSVP tracking
-        - Reminder/alarm configuration
-        - Virtual meeting links in description
+        POIN 1 & 4: Setiap peserta mendapat email INDIVIDUAL dengan:
+        - Waktu sesuai timezone MEREKA
+        - File ICS dengan VTIMEZONE disesuaikan ke timezone mereka
+        - Subject email menampilkan jam mereka
+        
+        Also regenerates activity notifications for all attendees with latest meeting info.
         
         Returns:
             Action dictionary to download ICS file
@@ -1555,167 +1962,143 @@ class MeetingEvent(models.Model):
         self.ensure_one()
         rec = self
         
-        # 1. Setup time and location data (using helper to avoid duplication)
-        local_times = rec._compute_local_times()
-        tz_name = local_times['tz_name']
-        tz_offset_str = local_times['tz_offset_str']
+        # 0. Regenerate activities for all attendees (with activity notes containing meeting details)
+        _logger.info(f"Regenerating activities for meeting {rec.id}")
+        rec._regenerate_all_activities()
         
-        loc_name = ", ".join(rec.room_location_ids.mapped('name')) if rec.room_location_ids else "Virtual"
+        # 1. Build recipient list with structure for tracking
+        targets = []
         
-        formatted_start_time = local_times['formatted_date']
-        start_time_hours = local_times['start_time_hours']
-        end_time_hours = local_times['end_time_hours']
-        
-        local_start = local_times['local_start']
-        local_end = local_times['local_end']
-        create_time = rec.create_date.astimezone(local_times['tz'])
-
-        # 2. Build Description & Link
-        raw_desc = rec.description or ''
-        description_text = raw_desc.replace('\n', '\\n')
-        
-        display_location = loc_name
-        if rec.zoom_link:
-            display_location += " (Online Meeting Available)"
-            description_text += f"\\n\\nJoin Link: {rec.zoom_link}"
-            if rec.zoom_id and rec.zoom_id != 'Google Meet' and rec.zoom_id != 'Microsoft Teams':
-                description_text += f"\\nMeeting ID: {rec.zoom_id}"
-        elif rec.virtual_room_id:
-            display_location += f" (Virtual: {rec.virtual_room_id.name})"
-
-        # 3. Build ICS Line-by-Line (Robust against whitespace issues)
-        lines = []
-        lines.append("BEGIN:VCALENDAR")
-        lines.append("VERSION:2.0")
-        lines.append("PRODID:-//Odoo Meeting Rooms//EN")
-        lines.append("CALSCALE:GREGORIAN")
-        lines.append("METHOD:REQUEST")
-        
-        lines.append("BEGIN:VTIMEZONE")
-        lines.append(f"TZID:{tz_name}")
-        lines.append(f"X-LIC-LOCATION:{tz_name}")
-        lines.append("BEGIN:STANDARD")
-        lines.append("DTSTART:19700101T000000")
-        lines.append(f"TZOFFSETFROM:{tz_offset_str}")
-        lines.append(f"TZOFFSETTO:{tz_offset_str}")
-        lines.append(f"TZNAME:{tz_name}")
-        lines.append("END:STANDARD")
-        lines.append("END:VTIMEZONE")
-        
-        lines.append("BEGIN:VEVENT")
-        lines.append(f"UID:meeting_event_{rec.id}")
-        lines.append(f"SEQUENCE:{rec.version}")
-        lines.append(f"SUMMARY:{rec.subject}")
-        lines.append(f"DTSTAMP:{create_time.strftime('%Y%m%dT%H%M%S')}")
-        lines.append(f"DTSTART;TZID={tz_name}:{local_start.strftime('%Y%m%dT%H%M%S')}")
-        lines.append(f"DTEND;TZID={tz_name}:{local_end.strftime('%Y%m%dT%H%M%S')}")
-        lines.append(f"LOCATION:{display_location}")
-        lines.append(f"DESCRIPTION:{description_text}")
-        lines.append(f'ORGANIZER;PARTSTAT=ACCEPTED;CN="{rec.create_uid.display_name}":mailto:{rec.create_uid.email}')
-        
-        # Add Attendees to ICS
+        # A. Internal Users (Use their Odoo Timezone)
         for user in rec.attendee:
             if user.email:
-                lines.append(f'ATTENDEE;ROLE=REQ-PARTICIPANT;RSVP=TRUE;CN="{user.display_name}":mailto:{user.email}')
+                targets.append({
+                    'email': user.email,
+                    'name': user.name,
+                    'tz': user.tz or 'UTC',
+                    'type': 'user'
+                })
         
+        # B. Guest Partner
+        host_tz = rec.host_user_id.tz or rec.create_uid.tz or 'UTC'
+        guest_tz = rec.guest_tz or host_tz
         if rec.guest_partner_id and rec.guest_partner_id.email:
-             lines.append(f'ATTENDEE;ROLE=REQ-PARTICIPANT;RSVP=TRUE;CN="{rec.guest_partner_id.name}":mailto:{rec.guest_partner_id.email}')
-
-        # Alarm
-        reminder = int(rec.calendar_alarm.duration) if rec.calendar_alarm and rec.calendar_alarm.duration else 15
-        lines.append("BEGIN:VALARM")
-        lines.append(f"TRIGGER:-PT{reminder}M")
-        lines.append("ACTION:DISPLAY")
-        lines.append("DESCRIPTION:Reminder")
-        lines.append("END:VALARM")
+            targets.append({
+                'email': rec.guest_partner_id.email,
+                'name': rec.guest_partner_id.name,
+                'tz': guest_tz,
+                'type': 'partner'
+            })
         
-        lines.append("END:VEVENT")
-        lines.append("END:VCALENDAR")
-
-        # Join lines with strict CRLF (Standard for ICS)
-        ics_content = "\r\n".join(lines)
-        
-        filename = f"{rec.subject}.ics"
-        encoded_ics = base64.b64encode(ics_content.encode('utf-8'))
-        
-        # Save Attachment
-        Attachment = self.env['ir.attachment'].sudo()
-        existing_att = Attachment.search([
-            ('res_model', '=', 'meeting.event'),
-            ('res_field', '=', 'calendar_file'),
-            ('res_id', '=', rec.id)
-        ])
-        if existing_att:
-            existing_att.unlink()
-            
-        attachment = Attachment.create({
-            'name': filename,
-            'type': 'binary',
-            'res_model': 'meeting.event',
-            'res_field': 'calendar_file',
-            'res_id': rec.id,
-            'datas': encoded_ics,
-            'public': True
-        })
-
-        # ========================================================
-        # SEND EMAIL LOGIC
-        # ========================================================
-        recipients = [rec.create_uid.email] 
-        for user in rec.attendee:
-            if user.email:
-                recipients.append(user.email)
-        
-        if rec.guest_partner_id and rec.guest_partner_id.email:
-            recipients.append(rec.guest_partner_id.email)
-
+        # C. Extra Emails (Raw strings) - Use same timezone as guest booking
         if rec.guest_emails:
-            extra_emails = [e.strip() for e in re.split(r'[;\n,]+', rec.guest_emails) if e.strip()]
-            recipients.extend(extra_emails)
-
-        recipients_email = ",".join(filter(None, list(set(recipients))))
-
-        virtual_room_info = ""
-        if rec.zoom_link:
-             virtual_room_info = f"<br/><br/><b>Online Meeting:</b> <a href='{rec.zoom_link}' target='_blank'>Click to Join</a>"
-        elif rec.virtual_room_id:
-            virtual_room_info = f"<br/>(Virtual Room: {rec.virtual_room_id.name})"
-
-        if recipients_email:
-            email_body = f"""
-            <div style="font-family: sans-serif;">
-                Hi Team & Guest,<br/><br/>
-                <b>{rec.create_uid.name}</b> has invited you to the "{rec.subject}" meeting<br/><br/>
-                <table border="0" style="background-color: #f9f9f9; padding: 10px; border-radius: 5px;">
-                    <tbody>
-                        <tr><td style="width:80px;"><b>Date</b></td><td>: {formatted_start_time}</td></tr>
-                        <tr><td><b>Time</b></td><td>: {start_time_hours} - {end_time_hours} ({tz_name})</td></tr>
-                        <tr><td><b>Location</b></td><td>: {loc_name} {virtual_room_info}</td></tr>
-                    </tbody>
-                </table>
-                <br/>
-                Please <b>download the attachment</b> to save this to your calendar.<br/><br/>
-            </div>
-            """
+            extras = [e.strip() for e in re.split(r'[;\n,]+', rec.guest_emails) if e.strip()]
+            for e in extras:
+                targets.append({
+                    'email': e,
+                    'name': 'Guest',
+                    'tz': guest_tz,
+                    'type': 'guest'
+                })
+        
+        # 2. BATCH PROCESS - Send emails in batches of 50 to prevent timeout
+        last_attachment_id = False
+        sent_count = 0
+        BATCH_SIZE = 50
+        
+        for batch_start in range(0, len(targets), BATCH_SIZE):
+            batch_end = min(batch_start + BATCH_SIZE, len(targets))
+            batch = targets[batch_start:batch_end]
             
-            mail_values = {
-                'subject': f"Invitation: {rec.subject}",
-                'email_from': rec.create_uid.email_formatted,
-                'email_to': recipients_email,
-                'body_html': email_body,
-                'attachment_ids': [(4, attachment.id)]
+            for target in batch:
+                try:
+                    target_tz = target['tz']
+                    
+                    # A. Calculate times in THEIR timezone
+                    local_times = rec._compute_local_times(target_tz)
+                    tz_name = local_times['tz_name']
+                    tz_offset_str = local_times['tz_offset_str']
+                    formatted_date = local_times['formatted_date']
+                    start_str = local_times['start_time_hours']
+                    end_str = local_times['end_time_hours']
+                    
+                    # B. Generate ICS content for this timezone
+                    ics_content = self._generate_ics_content_string(
+                        rec, local_times, tz_name, tz_offset_str, target['email']
+                    )
+                    
+                    # Create Attachment
+                    filename = f"invitation_{rec.id}_{target['type']}.ics"
+                    encoded_ics = base64.b64encode(ics_content.encode('utf-8'))
+                    
+                    attachment = self.env['ir.attachment'].sudo().create({
+                        'name': filename,
+                        'type': 'binary',
+                        'res_model': 'meeting.event',
+                        'res_id': rec.id,
+                        'datas': encoded_ics,
+                        'public': True
+                    })
+                    last_attachment_id = attachment.id
+                    
+                    # C. Generate Email Body for this recipient (with their times)
+                    loc_name = ", ".join(rec.room_location_ids.mapped('name')) if rec.room_location_ids else "Virtual"
+                    virtual_link = ""
+                    if rec.zoom_link:
+                        virtual_link = f"<br/><b>Join Link:</b> <a href='{rec.zoom_link}' target='_blank'>Click Here</a>"
+                    
+                    # Generate timezone breakdown HTML
+                    tz_breakdown = rec._generate_timezone_breakdown_html()
+                    
+                    email_body = f"""
+                    <div style="font-family: sans-serif;">
+                        Hi <b>{target['name']}</b>,<br/><br/>
+                        <b>{rec.create_uid.name}</b> has invited you to a meeting.<br/><br/>
+                        <table border="0" style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; width: 100%; max-width: 600px;">
+                            <tbody>
+                                <tr><td style="width:100px;"><b>Topic</b></td><td>: {rec.subject}</td></tr>
+                                <tr><td><b>Date</b></td><td>: {formatted_date}</td></tr>
+                                <tr><td><b>Time</b></td><td>: <span style="font-size: 1.1em; color: #00A09D; font-weight: bold;">{start_str} - {end_str}</span> ({tz_name})</td></tr>
+                                <tr><td><b>Location</b></td><td>: {loc_name} {virtual_link}</td></tr>
+                            </tbody>
+                        </table>
+                        <br/>
+                        {tz_breakdown}
+                        <br/>
+                        <p style="color: #666; font-size: 0.9em;">* Attached is the calendar file (.ics) converted to your timezone ({tz_name}).</p>
+                    </div>
+                    """
+                    
+                    # D. Send Email with ICS attachment
+                    mail = self.env['mail.mail'].sudo().create({
+                        'subject': f"Invitation: {rec.subject} @ {start_str} ({tz_name})",
+                        'email_from': rec.create_uid.email_formatted,
+                        'email_to': target['email'],
+                        'body_html': email_body,
+                        'auto_delete': True,
+                    })
+                    # Explicitly attach ICS file
+                    mail.attachment_ids = [(6, 0, [attachment.id])]
+                    mail.send()
+                    sent_count += 1
+                    
+                except Exception as e:
+                    _logger.error(f"Failed to send email to {target.get('email')}: {str(e)}")
+            
+            # Commit after every batch to free resources
+            if (batch_start + BATCH_SIZE) % (BATCH_SIZE * 2) == 0:
+                self.env.cr.commit()
+        
+        # 3. Log activity
+        rec.message_post(body=f"Personalized invitations sent to {sent_count} recipients (with individual timezone conversions).")
+        
+        # Return download for host (last generated ICS)
+        if last_attachment_id:
+            return {
+                'type': 'ir.actions.act_url',
+                'url': f'/web/content/{last_attachment_id}?download=true',
+                'target': 'self',
             }
-            mail = self.env['mail.mail'].sudo().create(mail_values)
-            mail.send()
-            
-            # Log email activity
-            rec.message_post(body=f"Email Invitation sent to: {recipients_email}")
-
-        return {
-            'type': 'ir.actions.act_url',
-            'url': f'/web/content/{attachment.id}?download=true',
-            'target': 'self',
-        }
 
     # ==========================
     # ACTION CANCEL (DELETE ZOOM & RESET FIELDS)

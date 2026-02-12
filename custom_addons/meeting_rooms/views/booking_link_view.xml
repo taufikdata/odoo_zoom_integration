@@ -26,12 +26,17 @@
                         
                         <group>
                             <field name="user_id" 
-                                attrs="{'readonly': [('is_admin', '=', False), ('create_date', '!=', False)]}" 
+                                attrs="{'readonly': ['|', ('is_admin', '=', False), ('create_date', '!=', False)]}" 
                                 domain="[('share', '=', False)]"
                                 options="{'no_create': True, 'no_open': True}"/>
                                 
                             <field name="active" widget="boolean_toggle" 
                                 attrs="{'readonly': [('is_current_user', '=', False), ('is_admin', '=', False)]}"/>
+                        </group>
+                        <group>
+                            <field name="tz" required="1" 
+                                options="{'no_create': True, 'no_open': True}"
+                                help="Timezone yang akan ditampilkan di portal booking untuk tamu eksternal"/>
                         </group>
                         <group>
                             <field name="booking_url" widget="CopyClipboardChar" readonly="1"/>
@@ -40,11 +45,33 @@
                     </group>
                     
                     <div class="alert alert-info" role="alert" attrs="{'invisible': [('is_current_user', '=', False), ('is_admin', '=', False)]}">
-                        Ini link booking aktif. Share kepada tamu.
+                        <p><b>Booking Link untuk Tamu Eksternal</b></p>
+                        <p>Ini adalah link yang akan dibagikan kepada calon klien atau tamu. Timezone di atas akan digunakan saat menampilkan jadwal di portal booking.</p>
+                        <p><b>💡 Tip: Multiple Booking Links</b><br/>
+                        Anda bisa membuat beberapa booking link dengan timezone berbeda! Misalkan:
+                        <ul>
+                            <li>Link 1: Title="Booking untuk Jakarta" → Timezone Asia/Jakarta</li>
+                            <li>Link 2: Title="Booking untuk Makassar" → Timezone Asia/Makassar</li>
+                            <li>Link 3: Title="Booking untuk Internasional" → Timezone UTC</li>
+                        </ul>
+                        Setiap link bisa bagikan kepada klien di region berbeda!</p>
                     </div>
-                    
                 </sheet>
             </form>
+        </field>
+    </record>
+
+    <record id="view_meeting_booking_link_tree" model="ir.ui.view">
+        <field name="name">meeting.booking.link.tree</field>
+        <field name="model">meeting.booking.link</field>
+        <field name="arch" type="xml">
+            <tree string="Booking Links">
+                <field name="name"/>
+                <field name="user_id"/>
+                <field name="tz"/>
+                <field name="booking_url" widget="CopyClipboardChar"/>
+                <field name="active" widget="boolean_toggle"/>
+            </tree>
         </field>
     </record>
 
@@ -66,7 +93,6 @@
                                 <t t-call="kanban-content"/>
                             </div>
                         </t>
-                        
                         <t t-else="">
                             <div class="oe_kanban_card p-3" style="cursor: default;">
                                 <t t-call="kanban-content"/>
@@ -107,31 +133,39 @@
         </field>
     </record>
 
-    <record id="action_meeting_booking_link" model="ir.actions.act_window">
+    <record id="action_my_booking_links" model="ir.actions.act_window">
+        <field name="name">My Booking Links</field>
+        <field name="res_model">meeting.booking.link</field>
+        <field name="view_mode">kanban,tree,form</field>
+        <field name="domain">[('user_id', '=', uid)]</field>
+        <field name="context">{'default_user_id': uid}</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                Buat Booking Link pertamamu!
+            </p>
+            <p>
+                Kamu bisa membuat banyak link dengan timezone berbeda (misal: Link khusus klien Jakarta, Link khusus klien London).
+            </p>
+        </field>
+    </record>
+
+    <record id="action_all_booking_links" model="ir.actions.act_window">
         <field name="name">All Booking Links</field>
         <field name="res_model">meeting.booking.link</field>
         <field name="view_mode">kanban,tree,form</field> 
     </record>
 
-    <record id="action_edit_my_booking_link_server" model="ir.actions.server">
-        <field name="name">Edit My Booking Link</field>
-        <field name="model_id" ref="model_meeting_booking_link"/>
-        <field name="state">code</field>
-        <field name="code">
-            action = model.action_open_my_link()
-        </field>
-    </record>
-
-    <menuitem id="menu_open_my_link"
-              name="Edit My Booking Link"
+    <menuitem id="menu_my_booking_link"
+              name="My Booking Links"
               parent="menu_meeting_rooms"
-              action="action_edit_my_booking_link_server"
+              action="action_my_booking_links"
               sequence="10"/>
 
-    <menuitem id="menu_meeting_booking_link" 
-              name="Booking Links List" 
+    <menuitem id="menu_all_booking_links_list" 
+              name="All Booking Links" 
               parent="menu_meeting_rooms" 
-              action="action_meeting_booking_link" 
+              action="action_all_booking_links" 
+              groups="base.group_user"
               sequence="20"/>
 
 </odoo>

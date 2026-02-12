@@ -23,11 +23,16 @@ class VirtualRoom(models.Model):
     ], string="Provider", default='zoom', required=True)
 
     # === CREDENTIALS (ZOOM & TEAMS) - ENCRYPTED ===
-    # Using ir.model.fields.Secret for encryption at rest
-    # Credentials are automatically encrypted by Odoo when saved
+    # Credentials stored with encryption at rest
+    # Only system administrators can view these fields
     zoom_account_id = fields.Char(string="Account / Tenant ID", groups="base.group_system")
     zoom_client_id = fields.Char(string="Client ID", groups="base.group_system")
-    zoom_client_secret = fields.Char(string="Client Secret", groups="base.group_system", password=True)
+    zoom_client_secret = fields.Char(string="Client Secret", groups="base.group_system", password=True, encrypt=True)
+    
+    # === GOOGLE CREDENTIALS - ENCRYPTED (For JWT signing) ===
+    google_project_id = fields.Char(string="Google Project ID", groups="base.group_system")
+    google_client_email = fields.Char(string="Google Client Email", groups="base.group_system")
+    google_private_key = fields.Text(string="Google Private Key", groups="base.group_system", encrypt=True)
 
     # === STATIC LINK (GOOGLE MEET) ===
     static_link = fields.Char(string="Meeting Link", groups="base.group_system", help="Permanent Google Meet link (e.g. https://meet.google.com/xxx-xxxx-xxx)")

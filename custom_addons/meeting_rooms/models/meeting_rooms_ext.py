@@ -106,18 +106,42 @@ class MeetingRoomsExt(models.Model):
 
     def action_cancel(self):
         """Cancel meeting room with security check."""
-        # === SECURITY CHECK FIRST ===
+        # === SECURITY CHECK: Allow host, creator (via event), or manager only ===
         from .constants import GroupNames
         is_manager = self.env.user.has_group(GroupNames.MEETING_MANAGER)
-        for rec in self:
-            if rec.create_uid != self.env.user and not is_manager:
-                raise ValidationError(_(
-                    f"ACCESS DENIED!\n\n"
-                    f"You cannot cancel this booking.\n"
-                    f"Only the creator ({rec.create_uid.name}) or a Meeting Administrator can cancel bookings."
-                ))
-        # ================================
+        current_user_id = self.env.user.id
         
+        for rec in self:
+            # Quick allow: manager can cancel anything
+            if is_manager:
+                continue
+            
+            # Primary check: Is current user the HOST (direct field in meeting.rooms)?
+            if rec.host_user_id and rec.host_user_id.id == current_user_id:
+                continue
+            
+            # Fallback check: Is current user the HOST (from linked event)?
+            linked_event = rec._linked_event()
+            if linked_event and linked_event.host_user_id and linked_event.host_user_id.id == current_user_id:
+                continue
+            
+            # Secondary check: Is current user the CREATOR of the event (not meeting.rooms)?
+            # For bookings, the host is the creator. For direct meetings, whoever created is the creator.
+            if linked_event and linked_event.create_uid and linked_event.create_uid.id == current_user_id:
+                continue
+            
+            # DENY: User has no permission
+            host_name = (rec.host_user_id.name if rec.host_user_id else 
+                        (linked_event.host_user_id.name if linked_event and linked_event.host_user_id else "Unknown"))
+            event_creator = (linked_event.create_uid.name if linked_event and linked_event.create_uid else "Unknown")
+            
+            raise ValidationError(
+                f"Access Denied!\n\n"
+                f"You cannot cancel this booking.\n"
+                f"Only the host ({host_name}), meeting creator ({event_creator}), or a Meeting Administrator can cancel bookings."
+            )
+        
+        # Proceed with cancellation
         for rec in self:
             rec._super_call_or_fallback_state(rec, 'cancel')
         return True

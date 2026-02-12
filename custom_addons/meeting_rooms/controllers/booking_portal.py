@@ -8,7 +8,6 @@ import re
 from werkzeug.utils import redirect
 import logging
 
-# Logger khusus untuk debugging
 _logger = logging.getLogger(__name__)
 
 class BookingPortal(http.Controller):
@@ -29,7 +28,7 @@ class BookingPortal(http.Controller):
         image_data = base64.b64decode(partner.image_128)
         headers = [
             ('Content-Type', 'image/png'), 
-            ('Content-Length', len(image_data)),
+            ('Content-Length', str(len(image_data))),
             ('Cache-Control', 'max-age=3600, public')
         ]
         return request.make_response(image_data, headers)
@@ -49,13 +48,17 @@ class BookingPortal(http.Controller):
 
         host_user = link_obj.user_id
         
-        if not host_user.tz:
-            return "ERROR: Host user does not have a timezone set."
+        # === POIN 3 FIX: USE LINK TIMEZONE, NOT USER TIMEZONE ===
+        # This allows one host to have multiple booking links with different timezones
+        target_tz_name = link_obj.tz or host_user.tz or 'UTC'
+        
+        if not target_tz_name:
+            return "ERROR: Booking link does not have timezone configured."
         
         try:
-            host_tz = pytz.timezone(host_user.tz)
+            host_tz = pytz.timezone(target_tz_name)
         except:
-            return f"ERROR: Invalid timezone '{host_user.tz}'."
+            return f"ERROR: Invalid timezone '{target_tz_name}'."
 
         # Setup Time
         now_utc = datetime.now(pytz.utc)
@@ -95,7 +98,7 @@ class BookingPortal(http.Controller):
             day_slots = []
             
             for hour in range(9, 17): 
-                # 1. Create Timestamp in HOST TIMEZONE
+                # 1. Create Timestamp in LINK TIMEZONE
                 slot_naive = datetime.combine(current_date_host, time(hour, 0, 0))
                 slot_aware_host = host_tz.localize(slot_naive)
                 
@@ -135,7 +138,7 @@ class BookingPortal(http.Controller):
             'host': host_user,
             'dates': dates,
             'token': token,
-            'tz_name': host_user.tz,
+            'tz_name': target_tz_name,
         })
 
     # =========================================================================
@@ -148,25 +151,25 @@ class BookingPortal(http.Controller):
         
         host_user = link_obj.user_id
         
+        # === POIN 3 FIX: USE LINK TIMEZONE ===
+        target_tz_name = link_obj.tz or host_user.tz or 'UTC'
+        
         try:
-            # Parse LOCAL string (Host timezone)
+            # Parse LOCAL string (Link timezone)
             dt_naive = datetime.strptime(time_str.strip(), '%Y-%m-%d %H:%M:%S')
             
-            # Calculate Host Time & UTC Time
-            host_tz_name = host_user.tz or 'UTC'
-            host_tz = pytz.timezone(host_tz_name)
+            target_tz = pytz.timezone(target_tz_name)
             
-            # Make timezone-aware (Local)
-            local_aware = host_tz.localize(dt_naive)
+            # Make timezone-aware (Local Link Time)
+            local_aware = target_tz.localize(dt_naive)
             # Convert to UTC
             utc_aware = local_aware.astimezone(pytz.utc)
 
-            # Format: "Tuesday, 10 Feb 2026 — 09:00 (Asia/Makassar) / 01:00 UTC"
-            time_host_str = local_aware.strftime('%H:%M')
+            time_link_str = local_aware.strftime('%H:%M')
             time_utc_str = utc_aware.strftime('%H:%M')
             date_str = local_aware.strftime('%A, %d %b %Y')
             
-            display_str = f"{date_str} — {time_host_str} ({host_tz_name}) / {time_utc_str} UTC"
+            display_str = f"{date_str} — {time_link_str} ({target_tz_name}) / {time_utc_str} UTC"
             
             return request.render('meeting_rooms.portal_booking_form_template', {
                 'host': host_user,
@@ -185,17 +188,12 @@ class BookingPortal(http.Controller):
     @http.route('/booking/submit', type='http', auth='public', website=True, csrf=True)
     def booking_submit(self, token, time_str, **kw):
         # --- SECURITY LAYER 1: HONEYPOT (Anti-Bot Detection) ---
-        # Bots automatically fill ALL form fields including hidden ones.
-        # We create a hidden field 'website_url' that humans won't see.
-        # If it's filled, it's definitely a bot.
         if kw.get('website_url'):
             client_ip = request.httprequest.remote_addr
             _logger.warning(f"SECURITY: Bot detected (Honeypot triggered) from IP {client_ip}")
             return "Error: Invalid Request (Bot Detected)"
 
         # --- SECURITY LAYER 2: RATE LIMITING (Anti-Spam) ---
-        # Prevent same user/browser from spamming submit button repeatedly.
-        # Rate limit: 1 booking per 60 seconds per session
         last_submit = request.session.get('last_booking_submit')
         if last_submit:
             last_time = datetime.fromtimestamp(last_submit)
@@ -204,10 +202,9 @@ class BookingPortal(http.Controller):
                 _logger.warning(f"SECURITY: Rate limit exceeded. {60 - int(time_since_last)}s remaining")
                 return f"Too many requests. Please wait {60 - int(time_since_last)} seconds before booking again."
         
-        # Update timestamp of last successful submission
         request.session['last_booking_submit'] = datetime.now().timestamp()
 
-        # --- MAIN LOGIC (Same as before) ---
+        # --- MAIN LOGIC ---
         link_obj = request.env['meeting.booking.link'].sudo().search([
             ('token', '=', token),
             ('active', '=', True)
@@ -216,25 +213,20 @@ class BookingPortal(http.Controller):
         if not link_obj: return "Link Not Found"
 
         host_user = link_obj.user_id
-        if not host_user.tz: return "Host Timezone missing."
+        
+        # === TIMEZONE RETRIEVAL ALREADY CORRECT ===
+        target_tz_name = link_obj.tz or host_user.tz or 'UTC'
 
         # TIMEZONE CONVERSION LOGIC
         try:
-            # Parse local time string (Host timezone time)
             local_dt_naive = datetime.strptime(time_str.strip(), '%Y-%m-%d %H:%M:%S')
-            
-            # Make timezone-aware with host timezone
-            host_tz = pytz.timezone(host_user.tz)
-            local_dt_aware = host_tz.localize(local_dt_naive)
-            
-            # Convert to UTC (what goes into database)
+            target_tz = pytz.timezone(target_tz_name)
+            local_dt_aware = target_tz.localize(local_dt_naive)
             utc_dt_aware = local_dt_aware.astimezone(pytz.utc)
             
-            # Remove tzinfo for database storage
             start_dt_db = utc_dt_aware.replace(tzinfo=None)
             end_dt_db = start_dt_db + timedelta(hours=1)
             
-            # SAFE LOGGING: Only general info, NO sensitive data (passwords/tokens)
             client_ip = request.httprequest.remote_addr
             _logger.info(f"BOOKING SECURED: User '{kw.get('name')}' | IP {client_ip} | Time {start_dt_db} UTC")
             
@@ -259,7 +251,7 @@ class BookingPortal(http.Controller):
                 'type': 'contact'
             })
 
-        # Check for Conflict (Simple DB query)
+        # Check for Conflict
         domain = [
             ('start_date', '<', end_dt_db),
             ('end_date', '>', start_dt_db),
@@ -269,8 +261,9 @@ class BookingPortal(http.Controller):
         if request.env['meeting.event'].sudo().search_count(domain) > 0:
             return "Sorry, this time slot has just been booked."
 
-        # Create Event
-        new_event = request.env['meeting.event'].sudo().with_context(tz='UTC').create({
+        # Create Event as HOST user (so host_user is the creator, not public user)
+        # This ensures permissions are correct: host = creator of the meeting
+        new_event = request.env['meeting.event'].sudo().with_user(host_user).with_context(tz='UTC').create({
             'subject': final_subject,
             'start_date': start_dt_db, 
             'end_date': end_dt_db,     
@@ -279,13 +272,17 @@ class BookingPortal(http.Controller):
             'host_user_id': host_user.id,
             'guest_partner_id': guest_partner.id,
             'guest_emails': ", ".join(email_list),
+            'guest_tz': target_tz_name,
         })
 
-        # Success Display
+        # ===============================================================
+        # Note: Using target_tz_name (from booking link), not host_user.tz
+        # ===============================================================
         time_host_str = local_dt_aware.strftime('%H:%M')
         time_utc_str = utc_dt_aware.strftime('%H:%M')
         date_str = local_dt_aware.strftime('%A, %d %b %Y')
-        display_time = f"{date_str} — {time_host_str} ({host_user.tz}) / {time_utc_str} UTC"
+        
+        display_time = f"{date_str} — {time_host_str} ({target_tz_name}) / {time_utc_str} UTC"
 
         return f"""
             <div style='display:flex; justify-content:center; align-items:center; height:100vh; background-color:#f3f4f6; font-family:sans-serif;'>
