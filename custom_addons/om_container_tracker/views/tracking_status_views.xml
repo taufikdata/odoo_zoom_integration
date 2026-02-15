@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_container_tracking_status_tree" model="ir.ui.view">
+        <field name="name">container.tracking.status.tree</field>
+        <field name="model">container.tracking.status</field>
+        <field name="arch" type="xml">
+            <tree string="EDI Status Codes" editable="bottom">
+                <field name="code"/>
+                <field name="name"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="action_container_tracking_status" model="ir.actions.act_window">
+        <field name="name">EDI Status Codes</field>
+        <field name="res_model">container.tracking.status</field>
+        <field name="view_mode">tree,form</field>
+    </record>
+
+    <menuitem id="menu_container_tracking_status"
+              name="EDI Status Codes"
+              parent="stock.menu_stock_config_settings"
+              action="action_container_tracking_status"
+              sequence="100"/>
+</odoo>

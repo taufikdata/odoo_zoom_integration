@@ -1,0 +1,101 @@
+id,code,name
+edi_bkg,BKG,Booking confirmed
+edi_cep,CEP,Container empty to shipper
+edi_cer,CER,Empty container returned
+edi_cgi,CGI,Gate in
+edi_cgo,CGO,Gate out
+edi_cll,CLL,Container loaded at first POL
+edi_cdd,CDD,Container discharge at final POD
+edi_vad,VAD,Vessel arrival at final POD
+edi_vdt,VDT,Vessel departure
+edi_vat,VAT,Vessel arrival at T/S port
+edi_vdl,VDL,Vessel departure from first POL
+edi_tsa,TSA,Transshipment arrival
+edi_tsd,TSD,Transshipment departure
+edi_cdc,CDC,Container delivery to consignee
+edi_rcf,RCF,Received at facility
+edi_dlv,DLV,Delivered to final destination
+edi_lts,LTS,Loaded on truck/rail
+edi_dts,DTS,Discharged from truck/rail
+edi_eat,EAT,Estimated arrival at T/S port
+edi_edt,EDT,Estimated departure from T/S port
+edi_fcl,FCL,Full Container Load
+edi_lcl,LCL,Less than Container Load
+edi_lod,LOD,Load
+edi_dis,DIS,Discharge
+edi_arr,ARR,Arrival
+edi_dep,DEP,Departure
+edi_gtu,GTU,Gate out empty
+edi_gti,GTI,Gate in empty
+edi_cns,CNS,Customs cleared
+edi_hld,HLD,Customs or Carrier hold
+edi_rls,RLS,Customs or Carrier release
+edi_blk,BLK,Container blocked
+edi_dmg,DMG,Container damaged
+edi_rpr,RPR,Container repaired
+edi_ins,INS,Container inspected
+edi_xry,XRY,Container X-Rayed
+edi_fum,FUM,Container fumigated
+edi_wea,WEA,Weather delay
+edi_con,CON,Port congestion delay
+edi_str,STR,Strike or labor delay
+edi_vgm,VGM,Verified Gross Mass received
+edi_doc,DOC,Documentation received
+edi_blw,BLW,Bill of Lading issued/waybilled
+edi_fre,FRE,Freight paid
+edi_dor,DOR,Delivery Order issued
+edi_eta,ETA,Estimated Time of Arrival
+edi_etd,ETD,Estimated Time of Departure
+edi_ata,ATA,Actual Time of Arrival
+edi_atd,ATD,Actual Time of Departure
+edi_loa,LOA,Loading authorized
+edi_dia,DIA,Discharge authorized
+edi_tpf,TPF,Transshipment rolled/postponed
+edi_obd,OBD,On board vessel
+edi_ibd,IBD,Inbound to destination
+edi_plr,PLR,Received at Place of Receipt
+edi_pfd,PFD,Arrived at Place of Final Delivery
+edi_mty,MTY,Empty container
+edi_ful,FUL,Full container
+edi_bkx,BKX,Booking cancelled
+edi_roll,ROL,Container rolled to next vessel
+edi_shf,SHF,Container shifted on board
+edi_sto,STO,Container in storage
+edi_wgt,WGT,Container weighed
+edi_seal,SEL,Container sealed
+edi_usea,USL,Container unsealed
+edi_cus,CUS,Customs inspection
+edi_phy,PHY,Phytosanitary inspection
+edi_vet,VET,Veterinary inspection
+edi_rad,RAD,Radiation inspection
+edi_agri,AGR,Agricultural inspection
+edi_haz,HAZ,Hazardous materials check
+edi_ref,REF,Reefer temperature checked
+edi_pon,PON,Reefer power on
+edi_pof,POF,Reefer power off
+edi_mnt,MNT,Maintenance performed
+edi_cln,CLN,Container cleaned
+edi_trn,TRN,In transit via rail/truck
+edi_dpt,DPT,Departed terminal
+edi_arv,ARV,Arrived at terminal
+edi_ldc,LDC,Load completed
+edi_dsc,DSC,Discharge completed
+edi_rdy,RDY,Ready for pickup
+edi_not,NOT,Notify party contacted
+edi_awb,AWB,Air Waybill issued (if multimodal)
+edi_gir,GIR,Gate in by rail
+edi_gor,GOR,Gate out by rail
+edi_git,GIT,Gate in by truck
+edi_got,GOT,Gate out by truck
+edi_gib,GIB,Gate in by barge
+edi_gob,GOB,Gate out by barge
+edi_pkg,PKG,Packaging/repackaging
+edi_spl,SPL,Shipment split
+edi_cnsg,CNG,Consolidation
+edi_dev,DEV,Cargo devanning (unpacking)
+edi_stf,STF,Cargo stuffing (packing)
+edi_wcr,WCR,Waiting for customs release
+edi_wvs,WVS,Waiting for vessel
+edi_wtr,WTR,Waiting for truck
+edi_wra,WRA,Waiting for rail
+edi_unk,UNK,Unknown event

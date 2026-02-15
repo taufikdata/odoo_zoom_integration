@@ -1,0 +1,289 @@
+
+
+=== FILE: ./__init__.py ===
+from . import models
+
+=== FILE: ./__manifest__.py ===
+{
+    'name': 'Container Tracker Integration',
+    'version': '1.0',
+    'summary': 'Track Container Position via TimeToCargo API',
+    'author': 'Taufik Hidayat',
+    'depends': ['stock'], # Kita butuh modul stock (inventory)
+    'data': [
+        'views/stock_picking_views.xml',
+    ],
+    'installable': True,
+    'application': False,
+}
+
+=== FILE: ./views/stock_picking_views.xml ===
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_picking_form_inherit_tracking" model="ir.ui.view">
+        <field name="name">stock.picking.form.inherit.tracking</field>
+        <field name="model">stock.picking</field>
+        <field name="inherit_id" ref="stock.view_picking_form"/>
+        <field name="arch" type="xml">
+            
+            <xpath expr="//field[@name='origin']" position="after">
+                <label for="container_number" string="Container Tracking"/>
+                <div class="o_row">
+                    <field name="container_number" placeholder="e.g. CSNU6184414"/>
+                    <button name="action_track_container" string="Track Now" type="object" class="btn-primary" icon="fa-globe"/>
+                </div>
+            </xpath>
+
+            <xpath expr="//notebook" position="inside">
+                <page string="Container Tracking (Live)">
+                    <field name="tracking_ui_html" widget="html" nolabel="1"/>
+                    
+                    <group string="Debug Data" groups="base.group_no_one">
+                        <field name="tracking_raw_data"/>
+                    </group>
+                </page>
+            </xpath>
+
+        </field>
+    </record>
+</odoo>
+
+=== FILE: ./models/__init__.py ===
+from . import stock_picking
+
+=== FILE: ./models/stock_picking.py ===
+from odoo import models, fields, api
+from odoo.exceptions import UserError
+import requests
+import json
+from datetime import datetime
+
+class StockPicking(models.Model):
+    _inherit = 'stock.picking'
+
+    container_number = fields.Char(string='Container Number')
+    tracking_raw_data = fields.Text(string='Raw Data', readonly=True)
+    tracking_ui_html = fields.Html(compute='_compute_tracking_ui', string='Tracking UI')
+
+    # --- FUNGSI BANTUAN (HELPER) ---
+    def _safe_get(self, data, key, default=None):
+        if isinstance(data, dict):
+            return data.get(key, default)
+        return default
+
+    def _format_date(self, date_str):
+        """Mengubah 2026-01-30T09:11:00 menjadi 1/30/26 | 9:11 AM"""
+        if not date_str: return "-"
+        try:
+            # Hapus 'Z' jika ada, dan parse ISO format
+            clean_date = str(date_str).replace('Z', '')
+            dt_obj = datetime.fromisoformat(clean_date)
+            return dt_obj.strftime("%m/%d/%y | %I:%M %p")
+        except:
+            return str(date_str)
+
+    @api.depends('tracking_raw_data')
+    def _compute_tracking_ui(self):
+        for rec in self:
+            # 1. TAMPILAN JIKA DATA KOSONG
+            if not rec.tracking_raw_data:
+                rec.tracking_ui_html = """
+                    <div class="alert alert-info text-center" style="margin: 20px;">
+                        <i class="fa fa-ship"></i> Belum ada data. Masukkan No. Kontainer & Klik Track Now.
+                    </div>
+                """
+                continue
+
+            # 2. PARSING DATA
+            try:
+                raw_json = json.loads(rec.tracking_raw_data)
+                data = self._safe_get(raw_json, 'data', {})
+                if not isinstance(data, dict): data = {}
+
+                # -- Data Header --
+                container_no = rec.container_number or "UNKNOWN"
+                status_main = self._safe_get(data, 'shipment_status', 'Unknown')
+                
+                # Shipping Line
+                sl_data = self._safe_get(data, 'shipping_line')
+                shipping_line = sl_data.get('name', 'Shipping Line') if isinstance(sl_data, dict) else "Shipping Line"
+
+                # Container Type
+                cnt_data = self._safe_get(data, 'container')
+                cnt_type = cnt_data.get('iso_code', '40HQ') if isinstance(cnt_data, dict) else "40HQ"
+
+                # Events List
+                events = cnt_data.get('events', []) if isinstance(cnt_data, dict) else []
+                
+                # Ambil Last Date dari event pertama
+                last_date_str = "-"
+                if events and isinstance(events[0], dict):
+                    last_date_str = self._format_date(events[0].get('date'))
+
+                # -- GENERATE HTML EVENT LOOP --
+                # Kita akan meloop semua event untuk membuat daftar detail di tengah kartu
+                events_html = ""
+                if events:
+                    for evt in events:
+                        if not isinstance(evt, dict): continue
+                        
+                        evt_date = self._format_date(evt.get('date'))
+                        evt_status = evt.get('status', '-')
+                        evt_desc = evt.get('description', '-')
+                        
+                        # Lokasi
+                        loc_data = evt.get('location')
+                        evt_loc = "-"
+                        if isinstance(loc_data, dict):
+                            loc_name = loc_data.get('name', '')
+                            loc_country = loc_data.get('country', '')
+                            evt_loc = f"{loc_name}, {loc_country}" if loc_country else loc_name
+
+                        # Tambahkan ke HTML String
+                        events_html += f"""
+                        <div class="border-top pt-2 mt-2">
+                            <div class="row" style="font-size: 13px;">
+                                <div class="col-md-6 mb-1">
+                                    <strong class="text-muted d-block" style="font-size: 11px;">Date:</strong>
+                                    {evt_date}
+                                </div>
+                                <div class="col-md-6 mb-1">
+                                    <strong class="text-muted d-block" style="font-size: 11px;">Status:</strong>
+                                    <span class="text-dark font-weight-bold">{evt_status}</span>
+                                </div>
+                                <div class="col-md-6 mb-1">
+                                    <strong class="text-muted d-block" style="font-size: 11px;">Location:</strong>
+                                    {evt_loc}
+                                </div>
+                                <div class="col-md-6 mb-1">
+                                    <strong class="text-muted d-block" style="font-size: 11px;">Event Notes:</strong>
+                                    {evt_desc}
+                                </div>
+                            </div>
+                        </div>
+                        """
+
+                # 3. RAKIT HTML UTAMA
+                html = f"""
+                <div style="font-family: 'Roboto', sans-serif; padding: 10px;">
+                    
+                    <div class="d-flex align-items-center mb-4">
+                        <h2 style="color: #d32f2f; font-weight: 900; margin: 0; margin-right: 15px;">{container_no}</h2>
+                        <span class="badge badge-pill badge-light border text-muted">Single Tracking</span>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-7">
+                            
+                            <div class="d-flex justify-content-between align-items-end mb-2">
+                                <h5 class="mb-0 text-dark font-weight-bold">The last container transport:</h5>
+                                <span class="text-muted small">Current event</span>
+                            </div>
+
+                            <div class="card shadow-sm border mb-4" style="border-radius: 8px;">
+                                <div class="card-body">
+                                    <div class="d-flex justify-content-between mb-2">
+                                        <div class="text-uppercase text-muted font-weight-bold" style="font-size: 10px;">Company</div>
+                                        <a href="#" class="small text-decoration-none">Transportation details <i class="fa fa-chevron-down"></i></a>
+                                    </div>
+                                    <h3 class="font-weight-bold mb-3 text-dark">{shipping_line}</h3>
+                                    
+                                    <div class="row mb-3">
+                                        <div class="col-4 border-right">
+                                            <small class="text-muted d-block" style="font-size: 11px;">Current status</small>
+                                            <b style="color: #d32f2f; font-size: 14px;">{status_main}</b>
+                                        </div>
+                                        <div class="col-4 border-right">
+                                            <small class="text-muted d-block" style="font-size: 11px;">Container type</small>
+                                            <b>{cnt_type}</b>
+                                        </div>
+                                        <div class="col-4">
+                                            <small class="text-muted d-block" style="font-size: 11px;">Last Date</small>
+                                            <b>{last_date_str}</b>
+                                        </div>
+                                    </div>
+
+                                    {events_html}
+                                    
+                                </div>
+                            </div>
+
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <h5 class="mb-0 text-dark font-weight-bold">Archive on previous shipments:</h5>
+                                <i class="fa fa-chevron-up text-muted"></i>
+                            </div>
+                            
+                            <div class="card shadow-sm border" style="border-radius: 8px; background-color: #f9f9f9;">
+                                <div class="card-body">
+                                    <div class="d-flex justify-content-between mb-2">
+                                        <div class="text-uppercase text-muted font-weight-bold" style="font-size: 10px;">Company</div>
+                                        <a href="#" class="small text-decoration-none">Transportation details <i class="fa fa-chevron-down"></i></a>
+                                    </div>
+                                    <h4 class="font-weight-bold mb-3 text-dark">Samudera Shipping Line</h4>
+                                    
+                                    <div class="row">
+                                        <div class="col-4 border-right">
+                                            <small class="text-muted d-block" style="font-size: 11px;">Current status</small>
+                                            <b class="text-danger">Container discharge at final POD</b>
+                                        </div>
+                                        <div class="col-4 border-right">
+                                            <small class="text-muted d-block" style="font-size: 11px;">Container type</small>
+                                            <b>HC40</b>
+                                        </div>
+                                        <div class="col-4">
+                                            <small class="text-muted d-block" style="font-size: 11px;">Last Date</small>
+                                            <b>11/1/23 | 3:42 AM</b>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="mt-4">
+                                <button class="btn btn-danger btn-block w-100 font-weight-bold py-2" style="background-color: #c62828;">
+                                    Report an error
+                                </button>
+                            </div>
+
+                        </div>
+
+                        <div class="col-md-5">
+                            <div class="card h-100 border text-center d-flex align-items-center justify-content-center" 
+                                 style="background-color: #e0e0e0; min-height: 400px; border-radius: 8px; position: relative; overflow: hidden;">
+                                 
+                                <div style="position: absolute; width: 100%; height: 100%; background: #ccc; z-index: 0;">
+                                    <i class="fa fa-map" style="font-size: 150px; color: #bbb; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);"></i>
+                                </div>
+
+                                <div class="card p-4 shadow-lg text-center" style="z-index: 10; width: 80%;">
+                                    <h5 class="font-weight-bold">Build a visual route</h5>
+                                    <p class="small text-muted">We will show on the map where the vessel is now and where its path goes</p>
+                                    <button class="btn btn-danger btn-block w-100" style="background-color: #c62828;">Build the route</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                """
+                rec.tracking_ui_html = html
+
+            except Exception as e:
+                rec.tracking_ui_html = f"<div class='alert alert-danger'>UI Error: {str(e)}</div>"
+
+    def action_track_container(self):
+        for rec in self:
+            if not rec.container_number: raise UserError("Isi Nomor Kontainer!")
+            api_key = self.env['ir.config_parameter'].sudo().get_param('timetocargo.api_key')
+            if not api_key: raise UserError("API Key belum disetting!")
+            
+            try:
+                url = "https://tracking.timetocargo.com/v1/container"
+                params = {"api_key": api_key, "company": "AUTO", "container_number": rec.container_number}
+                response = requests.get(url, params=params, timeout=15)
+                
+                if response.status_code == 200:
+                    rec.tracking_raw_data = json.dumps(response.json(), indent=4)
+                else:
+                    raise UserError(f"API Error {response.status_code}: {response.text}")
+            except Exception as e:
+                raise UserError(f"Connection Error: {str(e)}")
+        return True

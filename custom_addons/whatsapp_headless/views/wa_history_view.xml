@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <record id="view_whatsapp_history_tree" model="ir.ui.view">
+            <field name="name">whatsapp.history.tree</field>
+            <field name="model">whatsapp.history</field>
+            <field name="arch" type="xml">
+                <tree string="WhatsApp History" create="0" edit="0">
+                    <field name="create_date" string="Waktu"/>
+                    <field name="sender_name" string="Nama"/>
+                    <field name="sender_number" string="Nomor HP"/>
+                    <field name="message" string="Pesan" width="300"/>
+                    <field name="direction" string="Arah"/>
+                </tree>
+            </field>
+        </record>
+
+        <record id="view_whatsapp_history_form" model="ir.ui.view">
+            <field name="name">whatsapp.history.form</field>
+            <field name="model">whatsapp.history</field>
+            <field name="arch" type="xml">
+                <form string="WhatsApp Detail" create="0" edit="0">
+                    <sheet>
+                        <group>
+                            <group>
+                                <field name="create_date"/>
+                                <field name="sender_name"/>
+                                <field name="sender_number"/>
+                            </group>
+                            <group>
+                                <field name="direction"/>
+                            </group>
+                        </group>
+                        <group string="Message">
+                            <field name="message" nolabel="1"/>
+                        </group>
+                        <group string="Raw Data (Debug)">
+                            <field name="raw_data" nolabel="1"/>
+                        </group>
+                    </sheet>
+                </form>
+            </field>
+        </record>
+
+        <record id="view_whatsapp_history_filter" model="ir.ui.view">
+            <field name="name">whatsapp.history.filter</field>
+            <field name="model">whatsapp.history</field>
+            <field name="arch" type="xml">
+                <search string="Search WhatsApp History">
+                    <field name="sender_number"/>
+                    <field name="sender_name"/>
+                    <field name="message"/>
+                    <filter name="filter_incoming" string="Incoming" domain="[('direction', '=', 'in')]"/>
+                    <filter name="filter_outgoing" string="Outgoing" domain="[('direction', '=', 'out')]"/>
+                    <separator/>
+                    <filter name="filter_today" string="Today" domain="[('create_date', '>=', context_today().strftime('%Y-%m-%d 00:00:00'))]"/>
+                    <filter name="filter_this_week" string="This Week" domain="[('create_date', '>=', (context_today() - relativedelta(weeks=1)).strftime('%Y-%m-%d 00:00:00'))]"/>
+                </search>
+            </field>
+        </record>
+
+        <record id="action_whatsapp_history" model="ir.actions.act_window">
+            <field name="name">WhatsApp History</field>
+            <field name="res_model">whatsapp.history</field>
+            <field name="view_mode">tree,form</field>
+        </record>
+
+        <menuitem id="menu_whatsapp_root" name="WhatsApp Headless" web_icon="base,static/description/icon.png" sequence="10"/>
+        <menuitem id="menu_whatsapp_history" parent="menu_whatsapp_root" action="action_whatsapp_history" name="Chat History" sequence="10"/>
+    </data>
+</odoo>

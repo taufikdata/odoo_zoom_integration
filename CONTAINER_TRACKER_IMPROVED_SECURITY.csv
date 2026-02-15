@@ -1,0 +1,14 @@
+"""
+IMPROVED: security/ir.model.access.csv
+Version: 2.0 (Restricted Permissions)
+
+Changes:
+- Restrict EDI status editing to managers only
+- Remove create/unlink for regular users
+- Proper group-based access control
+"""
+
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_container_tracking_status_user,container.tracking.status.read,model_container_tracking_status,base.group_user,1,0,0,0
+access_container_tracking_status_manager,container.tracking.status.full,model_container_tracking_status,stock.group_stock_manager,1,1,1,1
+access_container_tracking_status_system,container.tracking.status.admin,model_container_tracking_status,base.group_system,1,1,1,1

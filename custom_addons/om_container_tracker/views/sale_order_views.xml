@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_order_form_inherit_container_tracking" model="ir.ui.view">
+        <field name="name">sale.order.form.inherit.tracking</field>
+        <field name="model">sale.order</field>
+        <field name="inherit_id" ref="sale.view_order_form"/>
+        <field name="arch" type="xml">
+            
+            <xpath expr="//field[@name='payment_term_id']" position="after">
+                <field name="container_number" placeholder="Contoh: CSNU6184414"/>
+                
+                <label for="access_token" string="Tracking Token"/>
+                <div class="o_row">
+                    <field name="access_token" force_save="1" readonly="1"/>
+                    <button name="action_generate_tracking_token" type="object" string="Generate Token" class="btn btn-sm btn-primary"/>
+                </div>
+                
+                <field name="tracking_url" widget="url" readonly="1" text="Buka Halaman Tracking ➔"/>
+            </xpath>
+
+        </field>
+    </record>
+</odoo>

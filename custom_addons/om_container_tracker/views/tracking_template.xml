@@ -1,0 +1,202 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <template id="tracking_page_template" name="Container Tracking Result">
+        <t t-call="website.layout">
+            
+            <style>
+                header, footer, .o_footer { display: none !important; }
+                #wrapwrap { padding-top: 0 !important; }
+                
+                body {
+                    background-color: #ffffff;
+                    font-family: 'Inter', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+                    color: #1a202c;
+                }
+                .container-custom { max-width: 800px; margin: 0 auto; padding: 40px 20px; }
+
+                .tracking-header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px; }
+                .tracking-number { color: #c53030; font-size: 1.8rem; font-weight: 700; margin: 0; }
+                
+                /* Tombol Search Again SUDAH DIHAPUS dari sini */
+
+                .section-title { font-size: 1.3rem; font-weight: 600; margin-bottom: 2px; }
+                .section-subtitle { font-size: 0.95rem; color: #a0aec0; margin-bottom: 25px; display: block; }
+
+                .info-card { background-color: #f7fafc; border-radius: 8px; padding: 20px; margin-bottom: 12px; }
+                .info-card-header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 1px solid #edf2f7; padding-bottom: 15px; margin-bottom: 15px; }
+
+                .label-sm { font-size: 0.8rem; color: #a0aec0; margin-bottom: 4px; }
+                .val-md { font-size: 1rem; font-weight: 600; color: #1a202c; }
+                .val-lg { font-size: 1.25rem; font-weight: 600; color: #1a202c; }
+                .val-red { color: #c53030; }
+                
+                .event-row { display: flex; margin-bottom: 15px; }
+                .event-col { flex: 1; padding-right: 15px; }
+                .event-row:last-child { margin-bottom: 0; }
+                
+                .text-upper { text-transform: uppercase; }
+
+                /* CSS BARU UNTUK TOMBOL BUKA/TUTUP (COLLAPSE) */
+                .transport-toggle {
+                    font-size: 0.85rem; 
+                    color: #4a5568; 
+                    cursor: pointer; /* Mengubah kursor jadi gambar tangan */
+                    user-select: none;
+                }
+                .transport-toggle:hover {
+                    color: #2b6cb0; /* Berubah biru saat disorot mouse */
+                }
+            </style>
+
+            <div class="container-custom">
+                
+                <div class="tracking-header-row">
+                    <h1 class="tracking-number"><t t-esc="number"/></h1>
+                </div>
+
+                <div class="section-title">The last container transport:</div>
+                <span class="section-subtitle">Current event</span>
+
+                <div class="info-card">
+                    <div class="info-card-header">
+                        <div>
+                            <div class="label-sm">Company</div>
+                            <div class="val-lg text-upper"><t t-esc="company_name"/></div>
+                        </div>
+                        
+                        <div class="transport-toggle" 
+                             data-toggle="collapse" data-target="#transportDetails"
+                             data-bs-toggle="collapse" data-bs-target="#transportDetails"
+                             onclick="let icon = document.getElementById('toggleIcon'); if(icon.classList.contains('fa-angle-up')){icon.classList.remove('fa-angle-up'); icon.classList.add('fa-angle-down');}else{icon.classList.remove('fa-angle-down'); icon.classList.add('fa-angle-up');}">
+                            Transportation details <i id="toggleIcon" class="fa fa-angle-up ml-1" style="color:#a0aec0;"></i>
+                        </div>
+
+                    </div>
+                    
+                    <div class="event-row">
+                        <div class="event-col">
+                            <div class="label-sm">Current status:</div>
+                            <div class="val-md val-red text-upper"><t t-esc="current_status"/></div>
+                        </div>
+                        <div class="event-col">
+                            <div class="label-sm">Container type:</div>
+                            <div class="val-md"><t t-esc="container_type"/></div>
+                        </div>
+                        <div class="event-col">
+                            <div class="label-sm">Last Date:</div>
+                            <div class="val-md"><t t-esc="last_date"/></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="transportDetails" class="collapse show">
+
+                    <t t-if="origin != '-' or destination != '-'">
+                        <div class="info-card">
+                            <div class="event-row border-bottom pb-3 mb-3">
+                                <div class="event-col border-right">
+                                    <div class="label-sm">Origin (Asal):</div>
+                                    <div class="val-md"><t t-esc="origin"/></div>
+                                </div>
+                                <div class="event-col pl-3">
+                                    <div class="label-sm">Destination (Tujuan):</div>
+                                    <div class="val-md"><t t-esc="destination"/></div>
+                                </div>
+                            </div>
+                            <div class="event-row">
+                                <div class="event-col border-right">
+                                    <div class="label-sm">Port of Loading (POL):</div>
+                                    <div class="val-md"><t t-esc="pol"/></div>
+                                </div>
+                                <div class="event-col pl-3">
+                                    <div class="label-sm">Port of Discharge (POD):</div>
+                                    <div class="val-md"><t t-esc="pod"/></div>
+                                </div>
+                            </div>
+                        </div>
+                    </t>
+
+                    <t t-foreach="events" t-as="evt">
+                        <div class="info-card">
+                            
+                            <div class="event-row">
+                                <div class="event-col">
+                                    <t t-set="status_up" t-value="evt['status'].upper()"/>
+                                    <t t-set="is_arrival" t-value="'ARRIVAL' in status_up or 'DISCHARG' in status_up"/>
+                                    <t t-set="is_departure" t-value="'DEPARTURE' in status_up or 'LOAD' in status_up"/>
+                                    
+                                    <div t-attf-class="label-sm #{'val-red font-weight-bold' if is_arrival or is_departure else ''}">
+                                        <t t-if="is_arrival">Container Arrival:</t>
+                                        <t t-elif="is_departure">Container Departure:</t>
+                                        <t t-else="">Date:</t>
+                                    </div>
+                                    <div class="val-md"><t t-esc="evt['date']"/></div>
+                                </div>
+                                <div class="event-col">
+                                    <div class="label-sm">Status:</div>
+                                    <div class="val-md text-upper"><t t-esc="evt['status']"/></div>
+                                </div>
+                            </div>
+
+                            <t t-if="evt.get('vessel')">
+                                <div class="event-row">
+                                    <div class="event-col">
+                                        <div class="label-sm">Vessel:</div>
+                                        <div class="val-md font-weight-normal text-upper"><t t-esc="evt['vessel']"/></div>
+                                    </div>
+                                    <div class="event-col">
+                                        <div class="label-sm">Voyage:</div>
+                                        <div class="val-md font-weight-normal"><t t-esc="evt.get('voyage') or '-'"/></div>
+                                    </div>
+                                </div>
+                            </t>
+                            
+                            <div class="event-row">
+                                <div class="event-col" style="flex: 100%;">
+                                    <t t-set="loc_label" t-value="'Location:'"/>
+                                    <t t-if="evt['location'] and evt['location'] != '-'">
+                                        <t t-if="evt['location'] == origin"><t t-set="loc_label" t-value="'Origin:'"/></t>
+                                        <t t-elif="evt['location'] == pol"><t t-set="loc_label" t-value="'Port of Loading:'"/></t>
+                                        <t t-elif="evt['location'] == pod"><t t-set="loc_label" t-value="'Port of Discharge:'"/></t>
+                                        <t t-elif="evt['location'] == destination"><t t-set="loc_label" t-value="'Destination:'"/></t>
+                                    </t>
+                                    
+                                    <div class="label-sm"><t t-esc="loc_label"/></div>
+                                    
+                                    <div class="val-md font-weight-normal">
+                                        <t t-if="evt['location'] and evt['location'] != '-'">
+                                            <t t-if="evt['iso_code']">
+                                                <img t-attf-src="https://flagcdn.com/24x18/{{ evt['iso_code'] }}.png" style="vertical-align: middle; margin-right: 6px; margin-top: -3px; border-radius: 2px; box-shadow: 0 0 2px rgba(0,0,0,0.3);" width="20" />
+                                            </t>
+                                        </t>
+                                        <t t-esc="evt['location']"/>
+                                        <t t-if="evt['terminal']">
+                                            <span class="text-muted ml-1" style="font-size: 0.9em;">
+                                                (<t t-esc="evt['terminal']"/>)
+                                            </span>
+                                        </t>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="event-row">
+                                <div class="event-col" style="flex: 100%;">
+                                    <div class="label-sm">Event Notes:</div>
+                                    <div class="val-md font-weight-normal" style="color: #2d3748;">
+                                        <t t-esc="evt['notes']"/>
+                                    </div>
+                                </div>
+                            </div>
+
+                        </div>
+                    </t>
+
+                </div> 
+                <div class="text-center mt-4">
+                    <small style="color: #cbd5e0;">Data provided by TimeToCargo API</small>
+                </div>
+
+            </div>
+        </t>
+    </template>
+</odoo>

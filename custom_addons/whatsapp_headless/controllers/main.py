@@ -1,0 +1,337 @@
+from odoo import http
+from odoo.http import request, Response
+import json
+import logging
+from datetime import datetime, timedelta
+
+_logger = logging.getLogger(__name__)
+
+class WhatsappController(http.Controller):
+
+    # ==========================================
+    # HELPER METHODS
+    # ==========================================
+    def _clean_phone_number(self, phone):
+        """
+        Clean phone number from various formats.
+        Remove @s.whatsapp.net, @lid, + prefix, and spaces
+        
+        Examples:
+        - "628157642379@s.whatsapp.net" -> "628157642379"
+        - "628157642379@lid" -> "628157642379"
+        - "+62 812 345 6789" -> "62812345678"
+        """
+        if not phone:
+            return ''
+        
+        # Remove @s.whatsapp.net or @lid suffixes
+        phone = str(phone).split('@')[0].strip()
+        
+        # Remove spaces
+        phone = phone.replace(' ', '')
+        
+        # Remove + prefix
+        phone = phone.lstrip('+')
+        
+        return phone
+
+    def _extract_sender_info(self, data):
+        """
+        Extract actual sender info from Wablas webhook data.
+        
+        For GROUP messages: Use group.sender (actual sender in group)
+        For DIRECT messages: Use top-level sender
+        
+        Returns: (sender_number, sender_name)
+        """
+        is_group = data.get('isGroup', False)
+        
+        if is_group:
+            # For group messages, get actual sender from group object
+            # The top-level "sender" is the device owner, not the actual sender
+            group = data.get('group', {})
+            sender = group.get('sender', '')
+            # For groups, the "pushName" is the group name, not sender name
+            # We'll use "pushName" for now since individual names aren't provided
+            name = data.get('pushName', 'Unknown')
+        else:
+            # For direct messages, use top-level sender
+            sender = data.get('sender', '')
+            name = data.get('pushName', 'Unknown')
+        
+        return sender, name
+
+    # ==========================================
+    # WEBHOOK - MENERIMA DATA DARI WA PROVIDER
+    # ==========================================
+    @http.route('/api/wa/webhook', type='json', auth='public', methods=['POST'], csrf=False)
+    def receive_webhook(self):
+        """
+        Webhook untuk menerima pesan dari WhatsApp Provider (Wablas, Fonnte, etc)
+        
+        Supported formats:
+        - Wablas GROUP: {"isGroup": true, "group": {"sender": "628xx"}, "pushName": "Group Name", ...}
+        - Wablas DIRECT: {"sender": "628xx", "pushName": "Contact Name", "isGroup": false, ...}
+        - Fonnte: {"sender": "+62812345678", "pushName": "Name", "message": "..."}
+        """
+        try:
+            # Get JSON data dari request
+            data = request.jsonrequest if request.jsonrequest else {}
+            
+            _logger.info(f"[WA Webhook] Received data: {json.dumps(data)}")
+            
+            # Extract sender and name (handles both group and direct messages)
+            sender, name = self._extract_sender_info(data)
+            
+            # Clean up phone number (remove @s.whatsapp.net, @lid, spaces, + prefix)
+            sender = self._clean_phone_number(sender)
+            
+            # Extract message
+            message = (data.get('message') or data.get('msg') or 
+                      data.get('text') or '').strip()
+            
+            # Validate mandatory fields
+            if not sender or not message:
+                _logger.warning(f"[WA Webhook] Missing sender or message. Sender={sender}, Message len={len(message)}")
+                return {
+                    'status': 'error',
+                    'message': 'Missing sender or message'
+                }
+            
+            # Save to database
+            msg_record = request.env['whatsapp.history'].sudo().create({
+                'sender_number': sender,
+                'sender_name': name,
+                'message': message,
+                'direction': 'in',
+                'raw_data': json.dumps(data, indent=2)
+            })
+            
+            request.env.cr.commit()
+            
+            is_group_msg = data.get('isGroup', False)
+            msg_type = "GROUP" if is_group_msg else "DIRECT"
+            _logger.info(f"[WA Webhook] {msg_type} message saved: ID={msg_record.id}, From={name} ({sender})")
+            
+            return {
+                'status': 'success',
+                'message': 'Message received',
+                'record_id': msg_record.id
+            }
+            
+        except Exception as e:
+            _logger.error(f"[WA Webhook] Error: {str(e)}", exc_info=True)
+            return {
+                'status': 'error',
+                'message': str(e)
+            }
+
+    # ==========================================
+    # GET HISTORY - RETRIEVE MESSAGES
+    # ==========================================
+    @http.route('/api/wa/get_history', type='http', auth='public', methods=['GET'], csrf=False)
+    def get_history(self, **params):
+        """
+        GET /api/wa/get_history?phone=+62812345678&limit=50&offset=0
+        """
+        try:
+            # Parse parameters
+            phone = params.get('phone', '').strip()
+            limit = min(int(params.get('limit', 100)), 1000)
+            offset = int(params.get('offset', 0))
+            
+            # Build domain filter
+            domain = []
+            if phone:
+                domain.append(('sender_number', '=', phone))
+            
+            # Search records
+            logs = request.env['whatsapp.history'].sudo().search(
+                domain,
+                order='create_date desc',
+                limit=limit,
+                offset=offset
+            )
+            
+            # Get total count
+            total_count = request.env['whatsapp.history'].sudo().search_count(domain)
+            
+            # Format response
+            data = []
+            for log in logs:
+                data.append({
+                    'id': log.id,
+                    'time': log.create_date.strftime('%Y-%m-%d %H:%M:%S') if log.create_date else '',
+                    'sender_number': log.sender_number,
+                    'sender_name': log.sender_name,
+                    'message': log.message,
+                    'direction': log.direction,
+                })
+            
+            return Response(
+                json.dumps({
+                    'status': 'success',
+                    'count': len(data),
+                    'total': total_count,
+                    'limit': limit,
+                    'offset': offset,
+                    'data': data
+                }),
+                status=200,
+                headers=[('Content-Type', 'application/json')]
+            )
+            
+        except Exception as e:
+            _logger.error(f"[WA Get History] Error: {str(e)}", exc_info=True)
+            return Response(
+                json.dumps({'status': 'error', 'message': str(e)}),
+                status=500,
+                headers=[('Content-Type', 'application/json')]
+            )
+
+    # ==========================================
+    # GET CONVERSATION - GET FULL CONVERSATION THREAD
+    # ==========================================
+    @http.route('/api/wa/conversation/<string:phone>', type='http', auth='public', methods=['GET'], csrf=False)
+    def get_conversation(self, phone, **params):
+        """
+        GET /api/wa/conversation/+62812345678
+        """
+        try:
+            limit = int(params.get('limit', 100))
+            
+            logs = request.env['whatsapp.history'].sudo().search(
+                [('sender_number', '=', phone)],
+                order='create_date asc',
+                limit=limit
+            )
+            
+            data = []
+            for log in logs:
+                data.append({
+                    'id': log.id,
+                    'time': log.create_date.strftime('%Y-%m-%d %H:%M:%S') if log.create_date else '',
+                    'sender_number': log.sender_number,
+                    'sender_name': log.sender_name,
+                    'message': log.message,
+                    'direction': log.direction,
+                })
+            
+            return Response(
+                json.dumps({
+                    'status': 'success',
+                    'phone': phone,
+                    'count': len(data),
+                    'messages': data
+                }),
+                status=200,
+                headers=[('Content-Type', 'application/json')]
+            )
+            
+        except Exception as e:
+            _logger.error(f"[WA Conversation] Error: {str(e)}", exc_info=True)
+            return Response(
+                json.dumps({'status': 'error', 'message': str(e)}),
+                status=500,
+                headers=[('Content-Type', 'application/json')]
+            )
+
+    # ==========================================
+    # SEND MESSAGE (For future use)
+    # ==========================================
+    @http.route('/api/wa/send_message', type='json', auth='public', methods=['POST'], csrf=False)
+    def send_message(self):
+        """
+        POST /api/wa/send_message
+        
+        Body: {
+            "phone": "+62812345678",
+            "message": "Hello from Odoo"
+        }
+        
+        (This will integrate with WhatsApp provider API)
+        """
+        try:
+            data = request.jsonrequest
+            phone = data.get('phone', '').strip()
+            message = data.get('message', '').strip()
+            
+            # Clean phone number
+            phone = self._clean_phone_number(phone)
+            
+            if not phone or not message:
+                return {'status': 'error', 'message': 'Missing phone or message'}
+            
+            # Save outgoing message
+            msg_record = request.env['whatsapp.history'].sudo().create({
+                'sender_number': phone,
+                'sender_name': 'Odoo System',
+                'message': message,
+                'direction': 'out',
+                'raw_data': json.dumps(data, indent=2)
+            })
+            
+            request.env.cr.commit()
+            
+            # TODO: Implement actual sending to WhatsApp provider
+            
+            return {
+                'status': 'success',
+                'message': 'Message queued for sending',
+                'record_id': msg_record.id
+            }
+            
+        except Exception as e:
+            _logger.error(f"[WA Send Message] Error: {str(e)}", exc_info=True)
+            return {'status': 'error', 'message': str(e)}
+
+    # ==========================================
+    # STATS - GET STATISTICS
+    # ==========================================
+    @http.route('/api/wa/stats', type='http', auth='public', methods=['GET'], csrf=False)
+    def get_stats(self, **params):
+        """
+        GET /api/wa/stats
+        """
+        try:
+            days = int(params.get('days', 7))
+            
+            # Calculate date range
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=days)
+            
+            # Get statistics
+            total_messages = request.env['whatsapp.history'].sudo().search_count([])
+            incoming = request.env['whatsapp.history'].sudo().search_count([('direction', '=', 'in')])
+            outgoing = request.env['whatsapp.history'].sudo().search_count([('direction', '=', 'out')])
+            recent_messages = request.env['whatsapp.history'].sudo().search_count([
+                ('create_date', '>=', start_date.strftime('%Y-%m-%d %H:%M:%S'))
+            ])
+            
+            # Get unique contacts
+            unique_contacts = request.env['whatsapp.history'].sudo().read_group(
+                [],
+                ['sender_number'],
+                ['sender_number']
+            )
+            
+            return Response(
+                json.dumps({
+                    'status': 'success',
+                    'total_messages': total_messages,
+                    'incoming_messages': incoming,
+                    'outgoing_messages': outgoing,
+                    f'messages_last_{days}_days': recent_messages,
+                    'unique_contacts': len(unique_contacts)
+                }),
+                status=200,
+                headers=[('Content-Type', 'application/json')]
+            )
+            
+        except Exception as e:
+            _logger.error(f"[WA Stats] Error: {str(e)}", exc_info=True)
+            return Response(
+                json.dumps({'status': 'error', 'message': str(e)}),
+                status=500,
+                headers=[('Content-Type', 'application/json')]
+            )
