@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- AUDIT TREE VIEW -->
+    <record id="view_container_tracking_audit_tree" model="ir.ui.view">
+        <field name="name">container.tracking.audit.tree</field>
+        <field name="model">container.tracking.audit</field>
+        <field name="arch" type="xml">
+            <tree string="Container Tracking Audit Log">
+                <field name="created_at"/>
+                <field name="container_number"/>
+                <field name="access_token"/>
+                <field name="client_ip"/>
+                <field name="success"/>
+                <field name="response_time_ms"/>
+            </tree>
+        </field>
+    </record>
+
+    <!-- AUDIT FORM VIEW -->
+    <record id="view_container_tracking_audit_form" model="ir.ui.view">
+        <field name="name">container.tracking.audit.form</field>
+        <field name="model">container.tracking.audit</field>
+        <field name="arch" type="xml">
+            <form string="Tracking Audit Log" create="false" delete="false" edit="false">
+                <sheet>
+                    <div class="oe_title">
+                        <h1>
+                            <field name="created_at"/>
+                        </h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="container_number"/>
+                            <field name="access_token"/>
+                        </group>
+                        <group>
+                            <field name="client_ip"/>
+                            <field name="success"/>
+                            <field name="response_time_ms"/>
+                        </group>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <!-- ACTION -->
+    <record id="action_container_tracking_audit" model="ir.actions.act_window">
+        <field name="name">Tracking Audit Log</field>
+        <field name="res_model">container.tracking.audit</field>
+        <field name="view_mode">tree,form</field>
+        <field name="view_id" ref="view_container_tracking_audit_tree"/>
+    </record>
+
+    <!-- MENU -->
+    <menuitem id="menu_container_tracking_audit"
+              name="Tracking Audit Log"
+              parent="stock.menu_stock_config_settings"
+              action="action_container_tracking_audit"
+              sequence="101"/>
+</odoo>
