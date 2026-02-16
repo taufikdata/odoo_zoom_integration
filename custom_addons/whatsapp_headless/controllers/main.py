@@ -37,29 +37,81 @@ class WhatsappController(http.Controller):
 
     def _extract_sender_info(self, data):
         """
-        Extract actual sender info from Wablas webhook data.
+        Extract sender/recipient info from Wablas webhook data.
         
-        For GROUP messages: Use group.sender (actual sender in group)
-        For DIRECT messages: Use top-level sender
+        Wablas format struct:
+        - isFromMe: true/false  = Is message sent by device owner
+        - sender: device number (always the device number)
+        - phone: contact number (could be sender for incoming, or recipient for outgoing)
+        - isGroup: true/false   = Group or direct message
         
-        Returns: (sender_number, sender_name)
+        Logic:
+        - sender_number = the OTHER person in the conversation
+          * For INCOMING: phone (who sent the message to us)
+          * For OUTGOING: phone (who we sent the message to)
+        - device = our device number (always sender field)
+        
+        Returns: (sender_number, sender_name, direction)
         """
+        is_from_me = data.get('isFromMe', False)
         is_group = data.get('isGroup', False)
+        device_number = data.get('sender', '')  # Our device
+        contact_number = data.get('phone', '')  # Other person/group
         
-        if is_group:
-            # For group messages, get actual sender from group object
-            # The top-level "sender" is the device owner, not the actual sender
-            group = data.get('group', {})
-            sender = group.get('sender', '')
-            # For groups, the "pushName" is the group name, not sender name
-            # We'll use "pushName" for now since individual names aren't provided
-            name = data.get('pushName', 'Unknown')
+        if is_from_me:
+            # OUTGOING MESSAGE (we sent this)
+            direction = 'out'
+            sender_number = contact_number  # Who we sent to (recipient)
+            
+            if is_group:
+                # Outgoing to group
+                group = data.get('group', {})
+                sender_name = group.get('subject', 'Group Chat')
+            else:
+                # Outgoing to individual - get recipient name from contacts
+                sender_name = self._get_contact_name(sender_number)
         else:
-            # For direct messages, use top-level sender
-            sender = data.get('sender', '')
-            name = data.get('pushName', 'Unknown')
+            # INCOMING MESSAGE (we received this)
+            direction = 'in'
+            
+            if is_group:
+                # Incoming from group
+                group = data.get('group', {})
+                sender_number = group.get('sender', '')  # Actual sender in group
+                sender_name = group.get('subject', 'Group Chat')
+            else:
+                # Incoming from individual
+                sender_number = contact_number  # Who sent to us
+                sender_name = self._get_contact_name(sender_number)
         
-        return sender, name
+        return sender_number, sender_name, direction
+    
+    def _get_contact_name(self, phone_number):
+        """
+        Get contact name from Odoo Contacts (res.partner) by phone number.
+        If not found, return 'Unknown'.
+        """
+        try:
+            if not phone_number:
+                return 'Unknown'
+            
+            # Clean phone number for matching
+            clean_phone = self._clean_phone_number(phone_number)
+            
+            # Search in res.partner by phone or mobile
+            partner = request.env['res.partner'].sudo().search([
+                '|',
+                ('phone', 'like', clean_phone),
+                ('mobile', 'like', clean_phone)
+            ], limit=1)
+            
+            if partner:
+                return partner.name
+            else:
+                return 'Unknown'
+        except Exception as e:
+            _logger.warning(f"[WA Contact] Error getting contact name: {str(e)}")
+            return 'Unknown'
 
     # ==========================================
     # WEBHOOK - MENERIMA DATA DARI WA PROVIDER
@@ -80,8 +132,8 @@ class WhatsappController(http.Controller):
             
             _logger.info(f"[WA Webhook] Received data: {json.dumps(data)}")
             
-            # Extract sender and name (handles both group and direct messages)
-            sender, name = self._extract_sender_info(data)
+            # Extract sender and name (handles both group and direct messages, incoming and outgoing)
+            sender, name, direction = self._extract_sender_info(data)
             
             # Clean up phone number (remove @s.whatsapp.net, @lid, spaces, + prefix)
             sender = self._clean_phone_number(sender)
@@ -103,7 +155,7 @@ class WhatsappController(http.Controller):
                 'sender_number': sender,
                 'sender_name': name,
                 'message': message,
-                'direction': 'in',
+                'direction': direction,
                 'raw_data': json.dumps(data, indent=2)
             })
             
@@ -111,7 +163,7 @@ class WhatsappController(http.Controller):
             
             is_group_msg = data.get('isGroup', False)
             msg_type = "GROUP" if is_group_msg else "DIRECT"
-            _logger.info(f"[WA Webhook] {msg_type} message saved: ID={msg_record.id}, From={name} ({sender})")
+            _logger.info(f"[WA Webhook] {msg_type} message ({direction.upper()}) saved: ID={msg_record.id}, From={name} ({sender})")
             
             return {
                 'status': 'success',
