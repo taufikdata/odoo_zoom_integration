@@ -7,10 +7,10 @@
             <field name="arch" type="xml">
                 <tree string="WhatsApp History" create="0" edit="0">
                     <field name="create_date" string="Waktu"/>
-                    <field name="sender_name" string="Nama"/>
-                    <field name="sender_number" string="Nomor HP"/>
+                    <field name="contact_name" string="Nama Kontak"/>
+                    <field name="contact_number" string="Nomor HP"/>
                     <field name="message" string="Pesan" width="300"/>
-                    <field name="direction" string="Arah"/>
+                    <field name="from_me" string="Dari Saya?" width="80"/>
                 </tree>
             </field>
         </record>
@@ -24,11 +24,12 @@
                         <group>
                             <group>
                                 <field name="create_date"/>
-                                <field name="sender_name"/>
-                                <field name="sender_number"/>
+                                <field name="contact_name"/>
+                                <field name="contact_number"/>
                             </group>
                             <group>
-                                <field name="direction"/>
+                                <field name="from_me" widget="boolean"/>
+                                <field name="is_group" widget="boolean"/>
                             </group>
                         </group>
                         <group string="Message">
@@ -47,11 +48,11 @@
             <field name="model">whatsapp.history</field>
             <field name="arch" type="xml">
                 <search string="Search WhatsApp History">
-                    <field name="sender_number"/>
-                    <field name="sender_name"/>
+                    <field name="contact_number"/>
+                    <field name="contact_name"/>
                     <field name="message"/>
-                    <filter name="filter_incoming" string="Incoming" domain="[('direction', '=', 'in')]"/>
-                    <filter name="filter_outgoing" string="Outgoing" domain="[('direction', '=', 'out')]"/>
+                    <filter name="filter_incoming" string="Incoming" domain="[('from_me', '=', False)]"/>
+                    <filter name="filter_outgoing" string="Outgoing" domain="[('from_me', '=', True)]"/>
                     <separator/>
                     <filter name="filter_today" string="Today" domain="[('create_date', '>=', context_today().strftime('%Y-%m-%d 00:00:00'))]"/>
                     <filter name="filter_this_week" string="This Week" domain="[('create_date', '>=', (context_today() - relativedelta(weeks=1)).strftime('%Y-%m-%d 00:00:00'))]"/>

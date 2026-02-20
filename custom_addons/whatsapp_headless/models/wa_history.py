@@ -5,15 +5,16 @@ class WhatsappHistory(models.Model):
     _description = 'Log Percakapan WhatsApp'
     _order = 'create_date desc'
 
-    # === CORE FIELDS (matches existing DB schema) ===
-    sender_number = fields.Char(string='Nomor Pengirim', required=True, index=True)
-    sender_name = fields.Char(string='Nama Pengirim')
-    message = fields.Text(string='Isi Pesan')
-    direction = fields.Selection([
-        ('in', 'Masuk (Customer)'),
-        ('out', 'Keluar (Sales)')
-    ], string='Arah', default='in')
+    # === CORE FIELDS ===
+    contact_number = fields.Char(string='Nomor Kontak', required=True, index=True)
+    contact_name = fields.Char(string='Nama Kontak')
+    message = fields.Text(string='Isi Pesan', required=True)
+    from_me = fields.Boolean(string='Dari Saya?', default=False, index=True)
     raw_data = fields.Text(string='Raw Data (JSON)')
+    
+    # === ADDITIONAL FIELDS ===
+    device_number = fields.Char(string='Nomor Device/Gateway', index=True)
+    is_group = fields.Boolean(string='Pesan Group?', default=False)
     
     # === EXTENDED FIELDS (untuk future) ===
     # partner_id = fields.Many2one('res.partner', string='Contact/Partner', ondelete='set null')  # TODO: Add column after MVP

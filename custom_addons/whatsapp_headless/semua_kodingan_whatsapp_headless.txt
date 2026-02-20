@@ -1,3 +1,108 @@
+
+
+=== FILE: ./__init__.py ===
+from . import models
+from . import controllers
+
+=== FILE: ./__manifest__.py ===
+{
+    'name': 'WhatsApp Headless MVP',
+    'version': '1.0',
+    'summary': 'Headless Backend for WhatsApp Chat History & CRM Integration',
+    'author': 'Taufik',
+    'depends': [
+        'base',
+        'contacts'
+    ],
+    'data': [
+        'security/ir.model.access.csv',
+        'views/wa_history_view.xml',
+    ],
+    'external_dependencies': {
+        'python': [],
+    },
+    'installable': True,
+    'application': True,
+    'auto_install': False,
+}
+
+=== FILE: ./views/wa_history_view.xml ===
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <record id="view_whatsapp_history_tree" model="ir.ui.view">
+            <field name="name">whatsapp.history.tree</field>
+            <field name="model">whatsapp.history</field>
+            <field name="arch" type="xml">
+                <tree string="WhatsApp History" create="0" edit="0">
+                    <field name="create_date" string="Waktu"/>
+                    <field name="sender_name" string="Nama"/>
+                    <field name="sender_number" string="Nomor HP"/>
+                    <field name="message" string="Pesan" width="300"/>
+                    <field name="direction" string="Arah"/>
+                </tree>
+            </field>
+        </record>
+
+        <record id="view_whatsapp_history_form" model="ir.ui.view">
+            <field name="name">whatsapp.history.form</field>
+            <field name="model">whatsapp.history</field>
+            <field name="arch" type="xml">
+                <form string="WhatsApp Detail" create="0" edit="0">
+                    <sheet>
+                        <group>
+                            <group>
+                                <field name="create_date"/>
+                                <field name="sender_name"/>
+                                <field name="sender_number"/>
+                            </group>
+                            <group>
+                                <field name="direction"/>
+                            </group>
+                        </group>
+                        <group string="Message">
+                            <field name="message" nolabel="1"/>
+                        </group>
+                        <group string="Raw Data (Debug)">
+                            <field name="raw_data" nolabel="1"/>
+                        </group>
+                    </sheet>
+                </form>
+            </field>
+        </record>
+
+        <record id="view_whatsapp_history_filter" model="ir.ui.view">
+            <field name="name">whatsapp.history.filter</field>
+            <field name="model">whatsapp.history</field>
+            <field name="arch" type="xml">
+                <search string="Search WhatsApp History">
+                    <field name="sender_number"/>
+                    <field name="sender_name"/>
+                    <field name="message"/>
+                    <filter name="filter_incoming" string="Incoming" domain="[('direction', '=', 'in')]"/>
+                    <filter name="filter_outgoing" string="Outgoing" domain="[('direction', '=', 'out')]"/>
+                    <separator/>
+                    <filter name="filter_today" string="Today" domain="[('create_date', '>=', context_today().strftime('%Y-%m-%d 00:00:00'))]"/>
+                    <filter name="filter_this_week" string="This Week" domain="[('create_date', '>=', (context_today() - relativedelta(weeks=1)).strftime('%Y-%m-%d 00:00:00'))]"/>
+                </search>
+            </field>
+        </record>
+
+        <record id="action_whatsapp_history" model="ir.actions.act_window">
+            <field name="name">WhatsApp History</field>
+            <field name="res_model">whatsapp.history</field>
+            <field name="view_mode">tree,form</field>
+        </record>
+
+        <menuitem id="menu_whatsapp_root" name="WhatsApp Headless" web_icon="base,static/description/icon.png" sequence="10"/>
+        <menuitem id="menu_whatsapp_history" parent="menu_whatsapp_root" action="action_whatsapp_history" name="Chat History" sequence="10"/>
+    </data>
+</odoo>
+
+=== FILE: ./controllers/__init__.py ===
+from . import main
+
+=== FILE: ./controllers/main.py ===
 from odoo import http
 from odoo.http import request, Response
 import json
@@ -37,42 +142,54 @@ class WhatsappController(http.Controller):
 
     def _extract_sender_info(self, data):
         """
-        Extract contact info from Wablas webhook data.
+        Extract sender/recipient info from Wablas webhook data.
         
-        WABLAS MAPPING (sesuai API docs):
-        =====================================
-        - isFromMe: true/false  → Is message sent by this device
-        - sender: "628xx"       → Device/Gateway number (nomor device Wablas)
-        - phone: "628xx"        → The other person/group (nomor lawan chat)
-        - isGroup: true/false   → Is it a group message
+        Wablas format struct:
+        - isFromMe: true/false  = Is message sent by device owner
+        - sender: device number (always the device number)
+        - phone: contact number (could be sender for incoming, or recipient for outgoing)
+        - isGroup: true/false   = Group or direct message
         
-        LOGIC UNTUK MAPPING:
-        =====================================
-        INCOMING MESSAGE (isFromMe = false):
-          - contact_number = phone (customer yang kirim ke kita)
-          - from_me = False
-          - device yang terima = sender
-          
-        OUTGOING MESSAGE (isFromMe = true):
-          - contact_number = phone (customer yang terima dari kita)
-          - from_me = True
-          - device yang kirim = sender
+        Logic:
+        - sender_number = the OTHER person in the conversation
+          * For INCOMING: phone (who sent the message to us)
+          * For OUTGOING: phone (who we sent the message to)
+        - device = our device number (always sender field)
         
-        Returns: (contact_number, from_me, contact_name, device_number, is_group)
+        Returns: (sender_number, sender_name, direction)
         """
         is_from_me = data.get('isFromMe', False)
         is_group = data.get('isGroup', False)
-        device_number = data.get('sender', '')      # Device/Gateway Wablas
-        contact_number = data.get('phone', '')      # The other person/group
+        device_number = data.get('sender', '')  # Our device
+        contact_number = data.get('phone', '')  # Other person/group
         
-        # Get contact name
-        if is_group:
-            group = data.get('group', {})
-            contact_name = group.get('subject', 'Group Chat')
+        if is_from_me:
+            # OUTGOING MESSAGE (we sent this)
+            direction = 'out'
+            sender_number = contact_number  # Who we sent to (recipient)
+            
+            if is_group:
+                # Outgoing to group
+                group = data.get('group', {})
+                sender_name = group.get('subject', 'Group Chat')
+            else:
+                # Outgoing to individual - get recipient name from contacts
+                sender_name = self._get_contact_name(sender_number)
         else:
-            contact_name = self._get_contact_name(contact_number)
+            # INCOMING MESSAGE (we received this)
+            direction = 'in'
+            
+            if is_group:
+                # Incoming from group
+                group = data.get('group', {})
+                sender_number = group.get('sender', '')  # Actual sender in group
+                sender_name = group.get('subject', 'Group Chat')
+            else:
+                # Incoming from individual
+                sender_number = contact_number  # Who sent to us
+                sender_name = self._get_contact_name(sender_number)
         
-        return contact_number, is_from_me, contact_name, device_number, is_group
+        return sender_number, sender_name, direction
     
     def _get_contact_name(self, phone_number):
         """
@@ -120,42 +237,38 @@ class WhatsappController(http.Controller):
             
             _logger.info(f"[WA Webhook] Received data: {json.dumps(data)}")
             
-            # Extract contact, from_me, device info
-            contact, from_me, contact_name, device, is_group = self._extract_sender_info(data)
+            # Extract sender and name (handles both group and direct messages, incoming and outgoing)
+            sender, name, direction = self._extract_sender_info(data)
             
-            # Clean up phone numbers
-            contact = self._clean_phone_number(contact)
-            device = self._clean_phone_number(device)
+            # Clean up phone number (remove @s.whatsapp.net, @lid, spaces, + prefix)
+            sender = self._clean_phone_number(sender)
             
             # Extract message
             message = (data.get('message') or data.get('msg') or 
                       data.get('text') or '').strip()
             
             # Validate mandatory fields
-            if not contact or not message:
-                _logger.warning(f"[WA Webhook] Missing contact or message. Contact={contact}, Message len={len(message)}")
+            if not sender or not message:
+                _logger.warning(f"[WA Webhook] Missing sender or message. Sender={sender}, Message len={len(message)}")
                 return {
                     'status': 'error',
-                    'message': 'Missing contact or message'
+                    'message': 'Missing sender or message'
                 }
             
             # Save to database
             msg_record = request.env['whatsapp.history'].sudo().create({
-                'contact_number': contact,
-                'contact_name': contact_name,
-                'from_me': from_me,
+                'sender_number': sender,
+                'sender_name': name,
                 'message': message,
-                'device_number': device,
-                'is_group': is_group,
+                'direction': direction,
                 'raw_data': json.dumps(data, indent=2)
             })
             
             request.env.cr.commit()
             
-            msg_type = "GROUP" if is_group else "DIRECT"
-            direction_text = "OUTGOING" if from_me else "INCOMING"
-            _logger.info(f"[WA Webhook] {msg_type} message ({direction_text}) saved: ID={msg_record.id}, "
-                        f"Contact={contact_name} ({contact})")
+            is_group_msg = data.get('isGroup', False)
+            msg_type = "GROUP" if is_group_msg else "DIRECT"
+            _logger.info(f"[WA Webhook] {msg_type} message ({direction.upper()}) saved: ID={msg_record.id}, From={name} ({sender})")
             
             return {
                 'status': 'success',
@@ -187,7 +300,7 @@ class WhatsappController(http.Controller):
             # Build domain filter
             domain = []
             if phone:
-                domain.append(('contact_number', '=', phone))
+                domain.append(('sender_number', '=', phone))
             
             # Search records
             logs = request.env['whatsapp.history'].sudo().search(
@@ -206,10 +319,10 @@ class WhatsappController(http.Controller):
                 data.append({
                     'id': log.id,
                     'time': log.create_date.strftime('%Y-%m-%d %H:%M:%S') if log.create_date else '',
-                    'contact_number': log.contact_number,
-                    'contact_name': log.contact_name,
+                    'sender_number': log.sender_number,
+                    'sender_name': log.sender_name,
                     'message': log.message,
-                    'from_me': log.from_me,
+                    'direction': log.direction,
                 })
             
             return Response(
@@ -245,7 +358,7 @@ class WhatsappController(http.Controller):
             limit = int(params.get('limit', 100))
             
             logs = request.env['whatsapp.history'].sudo().search(
-                [('contact_number', '=', phone)],
+                [('sender_number', '=', phone)],
                 order='create_date asc',
                 limit=limit
             )
@@ -255,10 +368,10 @@ class WhatsappController(http.Controller):
                 data.append({
                     'id': log.id,
                     'time': log.create_date.strftime('%Y-%m-%d %H:%M:%S') if log.create_date else '',
-                    'contact_number': log.contact_number,
-                    'contact_name': log.contact_name,
+                    'sender_number': log.sender_number,
+                    'sender_name': log.sender_name,
                     'message': log.message,
-                    'from_me': log.from_me,
+                    'direction': log.direction,
                 })
             
             return Response(
@@ -289,45 +402,33 @@ class WhatsappController(http.Controller):
         POST /api/wa/send_message
         
         Body: {
-            "phone": "+62812345678",          // recipient phone
-            "message": "Hello from Odoo",
-            "device_number": "6285920524227"  // (optional) your device number
+            "phone": "+62812345678",
+            "message": "Hello from Odoo"
         }
         
         (This will integrate with WhatsApp provider API)
         """
         try:
             data = request.jsonrequest
-            recipient = data.get('phone', '').strip()
+            phone = data.get('phone', '').strip()
             message = data.get('message', '').strip()
-            device_number = data.get('device_number', '').strip()
             
-            # Clean phone numbers
-            recipient = self._clean_phone_number(recipient)
-            device_number = self._clean_phone_number(device_number) if device_number else 'Unknown'
+            # Clean phone number
+            phone = self._clean_phone_number(phone)
             
-            if not recipient or not message:
+            if not phone or not message:
                 return {'status': 'error', 'message': 'Missing phone or message'}
-            
-            # For outgoing message: we (device) send to customer (recipient)
-            # Get contact name for the recipient
-            contact_name = self._get_contact_name(recipient)
             
             # Save outgoing message
             msg_record = request.env['whatsapp.history'].sudo().create({
-                'contact_number': recipient,           # Customer/recipient
-                'contact_name': contact_name,
-                'device_number': device_number,
-                'from_me': True,                        # We sent this
+                'sender_number': phone,
+                'sender_name': 'Odoo System',
                 'message': message,
-                'is_group': False,
+                'direction': 'out',
                 'raw_data': json.dumps(data, indent=2)
             })
             
             request.env.cr.commit()
-            
-            _logger.info(f"[WA Send Message] Message queued: ID={msg_record.id}, "
-                        f"From={device_number} → To={recipient} ({recipient_name})")
             
             # TODO: Implement actual sending to WhatsApp provider
             
@@ -358,8 +459,8 @@ class WhatsappController(http.Controller):
             
             # Get statistics
             total_messages = request.env['whatsapp.history'].sudo().search_count([])
-            incoming = request.env['whatsapp.history'].sudo().search_count([('from_me', '=', False)])
-            outgoing = request.env['whatsapp.history'].sudo().search_count([('from_me', '=', True)])
+            incoming = request.env['whatsapp.history'].sudo().search_count([('direction', '=', 'in')])
+            outgoing = request.env['whatsapp.history'].sudo().search_count([('direction', '=', 'out')])
             recent_messages = request.env['whatsapp.history'].sudo().search_count([
                 ('create_date', '>=', start_date.strftime('%Y-%m-%d %H:%M:%S'))
             ])
@@ -367,8 +468,8 @@ class WhatsappController(http.Controller):
             # Get unique contacts
             unique_contacts = request.env['whatsapp.history'].sudo().read_group(
                 [],
-                ['contact_number'],
-                ['contact_number']
+                ['sender_number'],
+                ['sender_number']
             )
             
             return Response(
@@ -391,3 +492,45 @@ class WhatsappController(http.Controller):
                 status=500,
                 headers=[('Content-Type', 'application/json')]
             )
+
+=== FILE: ./security/ir.model.access.csv ===
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_whatsapp_history,whatsapp.history,model_whatsapp_history,base.group_user,1,1,1,1
+access_whatsapp_history_public,whatsapp.history,model_whatsapp_history,,1,1,1,0
+
+=== FILE: ./models/__init__.py ===
+from . import wa_history
+
+=== FILE: ./models/wa_history.py ===
+from odoo import models, fields, api
+
+class WhatsappHistory(models.Model):
+    _name = 'whatsapp.history'
+    _description = 'Log Percakapan WhatsApp'
+    _order = 'create_date desc'
+
+    # === CORE FIELDS (matches existing DB schema) ===
+    sender_number = fields.Char(string='Nomor Pengirim', required=True, index=True)
+    sender_name = fields.Char(string='Nama Pengirim')
+    message = fields.Text(string='Isi Pesan')
+    direction = fields.Selection([
+        ('in', 'Masuk (Customer)'),
+        ('out', 'Keluar (Sales)')
+    ], string='Arah', default='in')
+    raw_data = fields.Text(string='Raw Data (JSON)')
+    
+    # === EXTENDED FIELDS (untuk future) ===
+    # partner_id = fields.Many2one('res.partner', string='Contact/Partner', ondelete='set null')  # TODO: Add column after MVP
+    # provider = fields.Selection([...], string='Provider')  # TODO: Add column after MVP
+    # message_id = fields.Char(string='Message ID')  # TODO: Add column after MVP
+    
+    # === AUTOMATIC MATCHING (Simplified MVP version) ===
+    @api.model_create_multi
+    def create(self, vals_list):
+        # Logger untuk debugging
+        for vals in vals_list:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"[WhatsApp Create] Creating record: {vals}")
+        
+        return super().create(vals_list)
