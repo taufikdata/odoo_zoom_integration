@@ -38,6 +38,7 @@
         # 'data/data_sync.xml',
         'data/cron_job.xml',
         'views/portal_templates.xml',
+        'views/contact_templates.xml',
     ],
 
 }

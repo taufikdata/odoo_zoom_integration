@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <template id="partner_list_template" name="Daftar Partner">
+            <t t-call="website.layout">
+                <style>
+                    body { background-color: #f4f7f6; }
+                    .modern-card {
+                        border: none;
+                        border-radius: 20px;
+                        transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+                        background: #ffffff;
+                        overflow: hidden;
+                    }
+                    .modern-card:hover {
+                        transform: translateY(-10px);
+                        box-shadow: 0 20px 40px rgba(0,0,0,0.08) !important;
+                    }
+                    .avatar-wrapper {
+                        width: 90px;
+                        height: 90px;
+                        margin: -45px auto 15px;
+                        border-radius: 50%;
+                        border: 4px solid #fff;
+                        box-shadow: 0 8px 20px rgba(0,0,0,0.1);
+                        background: #fff;
+                        position: relative;
+                        z-index: 2;
+                    }
+                    .cover-bg {
+                        height: 110px;
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    }
+                    .btn-modern {
+                        border-radius: 50px;
+                        padding: 8px 25px;
+                        font-weight: 600;
+                        transition: all 0.3s;
+                    }
+                    .btn-modern:hover {
+                        background: #764ba2;
+                        border-color: #764ba2;
+                        color: #fff;
+                        transform: scale(1.05);
+                    }
+                    /* Style tambahan untuk Search Bar */
+                    .search-container {
+                        max-width: 600px;
+                        margin: 0 auto;
+                    }
+                    .search-input {
+                        border-radius: 50px 0 0 50px;
+                        border: none;
+                        padding-left: 25px;
+                    }
+                    .search-input:focus {
+                        box-shadow: none;
+                        outline: none;
+                    }
+                    .search-btn {
+                        border-radius: 0 50px 50px 0;
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        border: none;
+                        padding: 0 30px;
+                        color: white;
+                        font-weight: bold;
+                    }
+                </style>
+
+                <div class="container mt-5 mb-5">
+                    <div class="text-center mb-4">
+                        <h1 class="fw-bolder" style="color: #2d3748; letter-spacing: -1px;">Direktori Kontak</h1>
+                        <p class="text-muted">Daftar klien dan partner resmi perusahaan.</p>
+                    </div>
+
+                    <div class="search-container mb-5">
+                        <form action="/res_partner_list" method="get" class="d-flex shadow-sm rounded-pill overflow-hidden bg-white">
+                            <input type="text" name="search" class="form-control search-input py-3" placeholder="Cari nama atau alamat perusahaan..." t-att-value="search"/>
+                            <button type="submit" class="btn search-btn">
+                                <i class="fa fa-search me-1"></i> Cari
+                            </button>
+                        </form>
+                    </div>
+                    <div t-if="not partners" class="text-center py-5">
+                        <h4 class="text-muted">Tidak ada kontak yang ditemukan.</h4>
+                    </div>
+
+                    <div class="row g-4">
+                        <t t-foreach="partners" t-as="p">
+                            <div class="col-12 col-md-6 col-lg-4">
+                                <div class="card modern-card shadow-sm h-100">
+                                    <div class="cover-bg"></div>
+                                    <div class="avatar-wrapper">
+                                        <img t-if="p.image_1920" t-attf-src="/web/image/res.partner/#{p.id}/image_1920" class="rounded-circle w-100 h-100" style="object-fit: cover;"/>
+                                        <img t-else="" src="/web/static/img/placeholder.png" class="rounded-circle w-100 h-100" style="object-fit: cover;"/>
+                                    </div>
+                                    <div class="card-body text-center pt-0 d-flex flex-column">
+                                        <h5 class="fw-bold mb-1"><t t-esc="p.name"/></h5>
+                                        <p class="text-muted small mb-4 flex-grow-1">
+                                            <i class="fa fa-map-marker text-danger me-1"></i>
+                                            <t t-esc="p.street or 'Alamat tidak tersedia'"/>
+                                        </p>
+                                        <a t-attf-href="/res_partner/#{p.id}" class="btn btn-outline-primary btn-modern btn-sm mt-auto">Lihat Profil</a>
+                                    </div>
+                                </div>
+                            </div>
+                        </t>
+                    </div>
+                </div>
+            </t>
+        </template>
+
+        <template id="partner_detail_template" name="Detail Partner">
+            <t t-call="website.layout">
+                <style>
+                    .profile-container { max-width: 650px; margin: auto; }
+                    .profile-card {
+                        border: none;
+                        border-radius: 24px;
+                        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.15);
+                        overflow: hidden;
+                        background: white;
+                    }
+                    .profile-cover {
+                        height: 200px;
+                        background: linear-gradient(135deg, #00c6ff 0%, #0072ff 100%);
+                    }
+                    .profile-avatar {
+                        width: 150px;
+                        height: 150px;
+                        border-radius: 50%;
+                        border: 6px solid white;
+                        box-shadow: 0 10px 25px rgba(0,0,0,0.15);
+                        margin: -75px auto 20px;
+                        background: white;
+                        position: relative;
+                        z-index: 1;
+                    }
+                    .btn-back {
+                        border-radius: 50px;
+                        font-weight: bold;
+                        transition: 0.3s;
+                    }
+                    .btn-back:hover {
+                        background-color: #f1f5f9;
+                        transform: translateX(-5px);
+                    }
+                </style>
+
+                <div class="container mt-5 mb-5 profile-container">
+                    <div class="profile-card">
+                        <div class="profile-cover"></div>
+                        <div class="profile-avatar">
+                            <img t-if="partner.image_1920" t-attf-src="/web/image/res.partner/#{partner.id}/image_1920" class="w-100 h-100 rounded-circle" style="object-fit: cover;"/>
+                            <img t-else="" src="/web/static/img/placeholder.png" class="w-100 h-100 rounded-circle" style="object-fit: cover;"/>
+                        </div>
+                        <div class="card-body text-center px-5 pb-5 pt-0">
+                            <h2 class="fw-bolder text-dark mb-2"><t t-esc="partner.name"/></h2>
+                            
+                            <div class="d-inline-flex align-items-center justify-content-center bg-light rounded-pill px-4 py-2 mb-4 text-muted">
+                                <i class="fa fa-map-pin text-primary me-2"></i> 
+                                <span style="font-size: 1.1rem;"><t t-esc="partner.street or 'Alamat belum diisi'"/></span>
+                            </div>
+                            
+                            <hr class="text-muted opacity-25 mb-4"/>
+                            
+                            <a href="/res_partner_list" class="btn btn-outline-secondary btn-back px-5 py-2 text-dark">
+                                <i class="fa fa-arrow-left me-2"></i> Kembali ke Direktori
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </t>
+        </template>
+    </data>
+</odoo>
